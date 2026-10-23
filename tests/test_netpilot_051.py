@@ -93,7 +93,7 @@ class Strategy(unittest.TestCase):
             with patch.object(b,'preflight',return_value=[str(script)]),\
                  patch.object(b,'load_catalog',return_value=cat),\
                  patch.object(b,'launch_hidden',return_value=[]),\
-                 patch.object(b,'scan_hosts',side_effect=scanner),\
+                 patch.object(b,'probe_flowseal_set',side_effect=lambda folder,hosts,cancel,progress: scanner(hosts,cancel,progress)),\
                  patch.object(b,'stop_ours'):\
                 result = b.benchmark(root, lambda pct,text:None, threading.Event(),keep_best=False)
             self.assertEqual(len(calls),1)

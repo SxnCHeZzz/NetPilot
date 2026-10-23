@@ -1,5 +1,5 @@
 #define MyAppName "NetPilot"
-#define MyAppVersion "0.5.1-rc2"
+#define MyAppVersion "0.5.2-rc3"
 #define MyAppExe "NetPilot.exe"
 
 [Setup]

@@ -1,30 +1,21 @@
 # NetPilot
 
-**Компактный сетевой помощник для Windows 10/11.** Управление Zapret, Telegram WS Proxy и Cloudflare WARP через единый трей.
+A compact Windows controller for [Zapret](https://github.com/Flowseal/zapret-discord-youtube), [TG WS Proxy](https://github.com/Flowseal/tg-ws-proxy), and [Cloudflare WARP](https://one.one.one.one/).
 
-![Версия](https://img.shields.io/badge/version-0.5.1--rc2-FF4DA6) ![Windows](https://img.shields.io/badge/Windows-10%2F11-252530) ![Лицензия](https://img.shields.io/badge/license-MIT-252530)
+**Status:** `0.5.2-rc3` — private testing release. Not affiliated with Flowseal or Cloudflare.
 
-> **Private prerelease.** Код готов к сборке, но Windows EXE, WinDivert, системные службы и интегрированный Telegram Proxy ещё нужно испытать на реальном ПК. Не публикуйте как стабильную версию без проверки.
+NetPilot keeps the three connections under one tray icon. The application downloads the supported upstream components, starts and stops its own processes, and helps compare Zapret configurations. Network drivers and administrator actions still require Windows approval.
 
-## Что умеет
+## Install
 
-- **Zapret:** скачивание официальной версии Flowseal, запуск стратегии, управление из трея, подбор по HTTPS-доступности полного списка из `lists/`.
-- **Telegram:** встроен официальный **консольный** движок TG WS Proxy от Flowseal — **без отдельного значка в трее**. Выключатель NetPilot завершает только созданный им процесс.
-- **WARP:** статус, подключение/отключение через официальный `warp-cli`, без открытия окна Cloudflare.
-- **Обновления:** проверка официальных релизов Zapret, установка с сохранением списков и откатом; настройки не стираются.
-- **Интерфейс:** минималистичный тёмный дизайн, один значок в системном трее; окно центрируется над раскрытым списком значков Windows (реальная геометрия окна оболочки, как в Volty), резервный вариант — над значком.
+For Windows 10/11 x64:
 
-## Где взять и как установить
+1. Install [Python 3.12](https://www.python.org/downloads/) to build from source. Install [Inno Setup 6](https://jrsoftware.org/isinfo.php) if you want the full Windows installer.
+2. Run **`BUILD_EXE.bat`** from this repository. The script installs dependencies, runs tests, and bundles the app.
+3. Use `dist/installer/NetPilotSetup.exe` or `dist/NetPilot/NetPilot.exe` to start. The second option requires the **whole `dist/NetPilot` directory**.
+4. On first launch, allow NetPilot to download Flowseal's Zapret into its components directory. WARP installation is a separate opt-in step.
 
-В репозитории **исходники**, а не готовые системные драйверы или чужие EXE.
-
-1. На Windows x64 установите **Python 3.12** и, для выпуска установщика, **Inno Setup 6**.
-2. Дважды нажмите **`BUILD_EXE.bat`** в корне проекта. Скрипт скачает зависимости, выполнит тесты и соберёт `dist/NetPilot/NetPilot.exe`.
-3. Если установлен Inno Setup, появится **`dist/installer/NetPilotSetup.exe`**. Установщик предложит папку, ярлык на рабочем столе, автозапуск и запуск после установки.
-4. Для передачи другим пользователям используйте **установщик** или целиком `dist/NetPilot-Portable.zip` — один файл EXE из папки `dist/NetPilot` не является переносимой сборкой.
-5. При первом запуске NetPilot предложит скачать **Zapret** из официального GitHub Releases. WARP устанавливается отдельно по явному подтверждению.
-
-Для локального запуска Python-приложения:
+For development:
 
 ```powershell
 py -m pip install -r requirements.txt
@@ -32,79 +23,58 @@ py -m unittest discover -s tests -v
 py src\app.py
 ```
 
-### Telegram без второго трея
+The Windows GitHub Actions workflow builds the installer and portable ZIP when triggered manually or by a `v*` tag. Binary releases belong in **Releases**, not in the Git repository.
 
-NetPilot **не запускает** `TgWsProxy_windows.exe` в обычном режиме. Вместо этого в сборку включён исходный console backend Flowseal [`proxy.tg_ws_proxy`](https://github.com/Flowseal/tg-ws-proxy) из зафиксированного исходного коммита (смотрите `requirements.txt`). Так код работает без второй иконки и может быть остановлен по тумблеру.
+## Use
 
-После включения Telegram Proxy откройте **Настройки → Подключить Telegram Desktop** один раз. Используется локальный MTProto-прокси `127.0.0.1:1443` и персональный случайный secret. Secret хранится локально в `%LOCALAPPDATA%\NetPilot\settings-v2.json` — **не добавляйте этот файл в Git**.
+- **Zapret:** toggle the selected `general*.bat` configuration. NetPilot never terminates another application's `winws.exe` or removes a previously installed Windows service.
+- **Telegram:** toggle the bundled *console* proxy, which has no separate tray icon. Once the local proxy starts, NetPilot opens an official `tg://proxy` link in Telegram Desktop. Telegram may require confirmation. Turning NetPilot's proxy off does **not** silently change Telegram Desktop's own proxy settings.
+- **WARP:** connect and disconnect through the installed official `warp-cli`, without opening the WARP GUI.
+- **Tray:** left-click opens the flyout above the notification area; right-click displays quick actions. The usual Close action hides the flyout.
 
-Если раньше запускали отдельный `TgWsProxy_windows.exe`, один раз закройте **его** значок через меню «Выход», чтобы освободить порт 1443. NetPilot намеренно не завершает чужие процессы. При ошибке интегрированного backend проверьте `%LOCALAPPDATA%\NetPilot\telegram-worker-error.log`.
+### Strategy checks
 
-**Обновление console backend Telegram:** так как он встраивается в NetPilot во время сборки, его отдельное обновление на диске пока не поддерживается. Для новой версии обновите зафиксированный исходный коммит в `requirements.txt`, проведите тесты и соберите новый NetPilot. Не следует путать это с загрузкой готового GUI-EXE Telegram.
+The strategy tester reads the official `utils/targets.txt` file from your installed Flowseal release and tests its HTTPS URLs using `curl` HEAD over HTTP/1.1, TLS 1.2 and TLS 1.3, where supported. It also attempts each usable HTTPS host from the installed `list-general.txt`, `list-general-user.txt` and `list-google.txt`, honoring exclusions. Cloudflare domains are kept in a separate user list and merged without duplicates.
 
-## Адреса и подбор стратегий
+This approach is **inspired by** Flowseal's standard `utils/test zapret.ps1`; it does not reproduce its ICMP ping, 16–20 KB DPI tests or voice/UDP/video checks. A blocked or failed web request is not proof that a Zapret strategy does not work. Tests run with a progress indicator, and detailed diagnostics are kept locally.
 
-В установленном Zapret NetPilot использует **реальные** файлы:
+If NetPilot itself already started Zapret, the tester temporarily stops only that process. When testing fails or is cancelled, it attempts to restore the previous managed configuration. It refuses to take control of an unrelated process or a Windows Zapret service. WARP should be disconnected during comparisons.
 
-| Файл Flowseal | Для чего |
-| --- | --- |
-| `lists/list-general.txt` | Основные домены Flowseal |
-| `lists/list-google.txt` | Домены Google/YouTube |
-| `lists/list-general-user.txt` | Пользовательские домены, включая Cloudflare |
-| `lists/list-exclude.txt`, `lists/list-exclude-user.txt` | Исключения |
+Large hostlists and many strategies can take several minutes to test. You can cancel from the same button.
 
-При загрузке Zapret NetPilot **дополняет** `list-general-user.txt` доменами из `assets/cloudflare-domains.txt` — они основаны на твоём Cloudflare/WARP-наборе. Повторы убираются. Полный ранее собранный дополнительный профиль (`assets/domains.txt`: игры, Twitch, Epic и др.) доступен **по желанию**: `Настройки → Расширенные настройки Zapret → Подключить дополнительный профиль доменов`. Он не подмешивается автоматически в новые установки. Существующие пользовательские списки никогда автоматически не очищаются.
+### Telegram troubleshooting
 
-**Посмотреть точный перечень:** `Настройки → Расширенные настройки Zapret → Посмотреть проверяемые домены`. Там есть поиск и количество адресов из каждого файла. Перечень может меняться после обновления Flowseal.
+NetPilot waits for `127.0.0.1:1443` before opening Telegram Desktop's proxy link. Telegram must be installed and registered as the handler for `tg://`. If the link is ignored, set an MTProto proxy manually in Telegram Desktop: address `127.0.0.1`, port `1443`, and the generated secret in your local settings file. Keep the secret private.
 
-### Как оцениваются стратегии
+If the port is occupied by an older independent `TgWsProxy_windows.exe`, close it through its own tray once. NetPilot only stops processes it created.
 
-По кнопке «Подобрать» NetPilot перебирает найденные `general*.bat` и проверяет **все уникальные пригодные HTTPS-домены** из установленного каталога. **Предварительного теста без Zapret больше нет.** Критерий выбора — наибольшее число HTTPS-ответов, затем меньшая средняя задержка. Если включено автоприменение и есть хотя бы один успешный ответ, NetPilot запускает выбранную стратегию до выхода из приложения.
+## Project layout
 
-> HTTP-результаты **не доказывают** работу голосового Discord, потокового видео, QUIC или WARP. Без базовой проверки нельзя также утверждать, что выбранная стратегия улучшила доступ по сравнению с сетью без Zapret. Автоприменение — выбор лучшей **среди протестированных** стратегий.
-
-Для WinDivert требуются права администратора. При активном WARP, чужом `winws.exe` или существующей службе Zapret тест не переключает чужие процессы; при тестировании применяются правила безопасности оригинальной сборки.
-
-## Управление через трей
-
-- **Левый клик** по иконке: открыть/скрыть компактную панель.
-- **Правый клик**: запустить/остановить инструменты, подобрать стратегию, выйти.
-- **Закрытие панели** оставляет NetPilot в трее.
-- **Выход** завершает управляемый Telegram Proxy, а остановка собственной стратегии Zapret предлагается пользователю. Сторонние службы автоматически не удаляются.
-
-## Обновления и диагностика
-
-- Запрет обновляется отдельными релизами с сохранением `*-user.txt` и резервной копией предыдущей версии.
-- WARP управляется через официальную установленную версию `warp-cli`.
-- Автообновление компонента не выполняется во время активных операций и подключения, которое NetPilot управляет.
-- Длительные сетевые операции не выполняются в основном потоке UI.
-- Основные настройки и история тестов — `%LOCALAPPDATA%\NetPilot` (не коммитить).
-
-## Публикация в приватный GitHub
-
-Рекомендуется создать **новый пустой приватный репозиторий** `NetPilot` (без авто-добавления README или LICENSE), затем из папки проекта выполнить:
-
-```powershell
-git init
-git branch -M main
-git add .
-git commit -m "NetPilot 0.5.1 RC2"
-git remote add origin https://github.com/ВАШ_ЛОГИН/NetPilot.git
-git push -u origin main
+```text
+src/         Desktop UI, adapters, strategy tests, Telegram worker
+assets/      Icons and optional domain profiles
+installer/   Inno Setup script
+.github/     Windows CI workflow
+tests/       Unit tests and Qt smoke tests
 ```
 
-При создании репозитория выберите **Private**. GitHub не получает данные из `%LOCALAPPDATA%`, если их не добавлять вручную. Перед каждым `git push` полезно запускать `git status` и проверять список файлов.
+Application state and the generated Telegram secret are stored outside this repository in `%LOCALAPPDATA%\NetPilot`. Do not commit local settings, logs, downloaded components, secrets or build artifacts. `.gitignore` covers the common cases.
 
-GitHub Actions (`.github/workflows/build-windows.yml`) умеет собирать Windows-артефакты в приватном репозитории. Они доступны только тем, кому вы дадите доступ к репозиторию. Перед открытием проекта публике проверьте зависимости, лицензии, код и реальные Windows-тесты.
+## Current limitations
 
-## Статус и ограничения
+- This is a **release candidate**, not a verified Windows production build. Windows/WinDivert, Telegram Desktop integration, dialogs and installer behavior must be tested on a real PC.
+- TLS HEAD checks do not verify live streams, voice calls or UDP/QUIC. `curl` behavior can also vary with network policies and its Windows TLS backend.
+- Full automated management of every option in Flowseal's changing `service.bat` is not yet implemented. The upstream tool remains available under advanced settings.
+- A successful local proxy startup does not mean Telegram Desktop accepted the proxy: the user may need to confirm the link.
 
-Эта версия — **RC2 для тестирования**, а не гарантированно готовая к массовому использованию программа. Python-модули и статические тесты проверяются в Linux, но реальные WinDivert/WARP и Windows shell HWND здесь недоступны. Проверьте на своём Windows, что центрирование панели, запуск встроенного TG WS Proxy, обновление компонентов и установщик работают, прежде чем приглашать тестировщиков.
+## Credits and licensing
 
-## Авторы и лицензии
+NetPilot is an independent project. Its own source is MIT-licensed (see `LICENSE`). TG WS Proxy's bundled console engine is © Flowseal and MIT-licensed; the complete attribution is in `THIRD_PARTY_NOTICES.txt`. Zapret and WARP remain third-party programs with their respective terms and update channels.
 
-NetPilot — независимый проект, неофициальная оболочка. Лицензия собственного кода: MIT (`LICENSE`). Встроенное ядро Telegram принадлежит Flowseal и распространяется по MIT (`THIRD_PARTY_NOTICES.txt`). Zapret и WARP остаются отдельными проектами и имеют свои условия.
+## 0.5.2-rc3
 
-- [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube)
-- [Flowseal/tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy)
-- [Cloudflare WARP](https://one.one.one.one/)
+- Use Flowseal-style curl/TLS checks alongside the installed hostlists; report diagnostic failures instead of declaring a working strategy broken.
+- Restore a NetPilot-managed strategy after a failed or cancelled test; never terminate unrelated services.
+- Open Telegram Desktop's proxy link automatically after the managed local proxy becomes ready.
+- Move confirmation dialogs above the always-on-top flyout.
+- Replace font-dependent symbols with consistent vector glyphs, make header controls easier to click, and show progress percentages separately from the thin bar.

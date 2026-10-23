@@ -29,12 +29,12 @@ if '--tg-headless' in sys.argv:
         raise
     sys.exit(0)
 
-from PySide6.QtCore import Qt, QObject, Signal, QTimer
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QBrush, QCursor
+from PySide6.QtCore import Qt, QObject, Signal, QTimer, QPointF
+from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QBrush, QCursor, QPolygonF, QPainterPath, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QFrame, QHBoxLayout,
     QVBoxLayout, QLabel, QPushButton, QProgressBar, QScrollArea, QComboBox,
-    QCheckBox, QSystemTrayIcon, QMenu, QFileDialog, QMessageBox, QLineEdit, QPlainTextEdit,
+    QCheckBox, QSystemTrayIcon, QMenu, QFileDialog, QMessageBox as NativeMessageBox, QLineEdit, QPlainTextEdit,
     QSizePolicy, QStackedWidget, QToolButton, QGraphicsDropShadowEffect,
 )
 import managed as m
@@ -43,7 +43,7 @@ from catalog import load_catalog
 import telegram_headless as tg
 from tray_position import Rect, find_overflow_rect, physical_to_qt, centered
 
-VERSION = '0.5.1-rc2'
+VERSION = '0.5.2-rc3'
 PINK = '#FF4DA6'
 CSS = '''
 *{font-family:'Segoe UI';font-size:12px;color:#F4F2F8}
@@ -66,11 +66,11 @@ QPushButton:pressed{background:#494052}
 QPushButton:disabled{color:#777482;background:#23212A;border-color:#282632}
 QPushButton#primary{background:#E63E95;border:1px solid #F45BAA;color:white;font-weight:750}
 QPushButton#primary:hover{background:#FF54A6}
-QPushButton#icon{background:#25232E;border:1px solid #302D3A;min-width:25px;min-height:24px;padding:5px;font-size:16px}
+QPushButton#icon{background:#25232E;border:1px solid #302D3A;min-width:27px;min-height:26px;padding:5px;font-size:18px;font-weight:800}
 QPushButton#quiet{background:transparent;border:1px solid #292630;color:#BFB9C9}
 QPushButton#quiet:hover{background:#282530}
 QPushButton#danger{color:#FFADC6;border:1px solid #503346}
-QProgressBar{background:#35313D;border:none;border-radius:4px;height:7px;max-height:7px}
+QProgressBar{background:#35313D;border:none;border-radius:4px;min-height:7px;max-height:7px}
 QProgressBar::chunk{background:#F34DA3;border-radius:4px}
 QComboBox,QLineEdit{background:#25232F;border:1px solid #403A4B;border-radius:8px;padding:7px;min-height:21px}
 QComboBox QAbstractItemView{background:#221D2A;selection-background-color:#AE397A;outline:none}
@@ -80,6 +80,70 @@ QScrollBar::handle:vertical{background:#504056;border-radius:3px;min-height:30px
 QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0}
 QToolTip{background:#272331;color:white;border:1px solid #564557;padding:6px}
 '''
+
+
+class QMessageBox(NativeMessageBox):
+    """Windows Tool+AlwaysOnTop owners need explicitly foregrounded dialogs."""
+    @staticmethod
+    def _show(parent, title, message, icon, buttons):
+        dlg = NativeMessageBox(parent)
+        dlg.setIcon(icon)
+        dlg.setWindowTitle(title)
+        dlg.setText(str(message))
+        dlg.setStandardButtons(buttons)
+        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dlg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        dlg.setStyleSheet(CSS)
+        return NativeMessageBox.StandardButton(dlg.exec())
+
+    @staticmethod
+    def warning(parent, title, message):
+        return QMessageBox._show(parent,title,message,NativeMessageBox.Icon.Warning,
+                                 NativeMessageBox.StandardButton.Ok)
+
+    @staticmethod
+    def information(parent, title, message):
+        return QMessageBox._show(parent,title,message,NativeMessageBox.Icon.Information,
+                                 NativeMessageBox.StandardButton.Ok)
+
+    @staticmethod
+    def question(parent,title,message):
+        return QMessageBox._show(parent,title,message,NativeMessageBox.Icon.Question,
+                                 NativeMessageBox.StandardButton.Yes | NativeMessageBox.StandardButton.No)
+
+
+class ServiceGlyph(QWidget):
+    """Small vector glyphs — no platform-dependent emoji or font substitutions."""
+    def __init__(self, kind, parent=None):
+        super().__init__(parent)
+        self.kind=kind
+        self.setFixedSize(25,25)
+        self.setAccessibleName({'zapret':'Zapret','telegram':'Telegram','warp':'WARP'}[kind])
+
+    def paintEvent(self,event):
+        p=QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor(PINK),1.7))
+        if self.kind=='telegram':
+            points=QPolygonF([QPointF(3,12),QPointF(22,3),QPointF(17,21),QPointF(12,15),QPointF(9,19),QPointF(9,14)])
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPolygon(points)
+            p.drawLine(QPointF(9,14),QPointF(22,3))
+        elif self.kind=='warp':
+            path=QPainterPath()
+            path.moveTo(7,19)
+            path.cubicTo(1,19,1,11,7,10)
+            path.cubicTo(7,3,17,2,19,10)
+            path.cubicTo(26,10,25,19,19,19)
+            path.closeSubpath()
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+        else:
+            path=QPainterPath()
+            path.moveTo(12.5,2);path.lineTo(22,12.5);path.lineTo(12.5,23);path.lineTo(3,12.5);path.closeSubpath()
+            p.drawPath(path)
+            p.drawEllipse(QPointF(12.5,12.5),2.7,2.7)
+        p.end()
 
 
 def app_icon():
@@ -314,13 +378,13 @@ class NetPilot(QMainWindow):
         self.connection_note = QLabel('● Готово'); self.connection_note.setObjectName('status'); strap.addWidget(self.connection_note)
         self.controls = {}
         for name, subtitle, icon, handler in [
-            ('zapret', 'Discord и YouTube', '◈', self.toggle_zapret),
-            ('telegram', 'Telegram Proxy · без отдельного трея', '↗', self.toggle_telegram),
-            ('warp', 'Cloudflare WARP', '◎', self.toggle_warp),
+            ('zapret', 'Discord и YouTube', 'zapret', self.toggle_zapret),
+            ('telegram', 'Telegram Proxy', 'telegram', self.toggle_telegram),
+            ('warp', 'Cloudflare WARP', 'warp', self.toggle_warp),
         ]:
             card = QFrame(objectName='row'); content.addWidget(card)
             line = QHBoxLayout(card); line.setContentsMargins(12,12,12,12); line.setSpacing(10)
-            glyph = QLabel(icon); glyph.setStyleSheet(f'font-size:19px;color:{PINK};'); glyph.setFixedWidth(23); line.addWidget(glyph)
+            glyph = ServiceGlyph(icon); line.addWidget(glyph)
             block = QVBoxLayout(); block.setSpacing(3); line.addLayout(block, 1)
             label = QLabel({'zapret':'Zapret','telegram':'Telegram','warp':'WARP'}[name]); label.setStyleSheet('font-weight:700;font-size:13px'); block.addWidget(label)
             detail = QLabel(subtitle); detail.setObjectName('muted'); block.addWidget(detail)
@@ -334,14 +398,18 @@ class NetPilot(QMainWindow):
         self.strategy_name=QLabel('Не выполнялся'); self.strategy_name.setObjectName('muted'); line.addWidget(self.strategy_name)
         self.test_button=QPushButton('Подобрать стратегию'); self.test_button.setObjectName('primary')
         self.test_button.clicked.connect(self.start_test); wrap.addWidget(self.test_button)
+        progress_row=QHBoxLayout();progress_row.setSpacing(9);wrap.addLayout(progress_row)
         self.test_progress=QProgressBar();self.test_progress.setRange(0,100);self.test_progress.setValue(0)
-        self.test_progress.setVisible(False); wrap.addWidget(self.test_progress)
+        self.test_progress.setTextVisible(False);self.test_progress.setVisible(False);progress_row.addWidget(self.test_progress,1)
+        self.test_percent=QLabel('0%');self.test_percent.setObjectName('small');self.test_percent.setFixedWidth(32)
+        self.test_percent.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.test_percent.setVisible(False);progress_row.addWidget(self.test_percent)
         self.test_details=QLabel('');self.test_details.setObjectName('small');self.test_details.setWordWrap(True);wrap.addWidget(self.test_details)
         content.addStretch()
         bottom=QHBoxLayout();content.addLayout(bottom)
         self.install_button=QPushButton('↓  Компоненты');self.install_button.setObjectName('quiet');self.install_button.clicked.connect(self.install_dialog);bottom.addWidget(self.install_button)
         bottom.addStretch()
-        about=QLabel('v0.5.1 RC2');about.setObjectName('small');bottom.addWidget(about)
+        about=QLabel('v0.5.2 RC3');about.setObjectName('small');bottom.addWidget(about)
         self.load_last_test()
 
     def _setting_row(self, parent, name, value, handler):
@@ -367,7 +435,6 @@ class NetPilot(QMainWindow):
         divider=QLabel('КОМПОНЕНТЫ И ОБСЛУЖИВАНИЕ');divider.setObjectName('eyebrow');self.prefs.addWidget(divider)
         for title, handler in [
             ('Установить / обновить Zapret',self.install_dialog),
-            ('Подключить Telegram Desktop',self.connect_telegram),
             ('Проверить новые версии',lambda:self.check_updates(True)),
             ('Откатить Zapret',lambda:self.rollback('zapret')),
                         ('Расширенные настройки Zapret',self.expert),
@@ -507,10 +574,10 @@ class NetPilot(QMainWindow):
         self.pool.submit(call)
 
     def progress_update(self,percent,text):
-        if not self.test_running:
-            self.test_progress.setVisible(True);self.test_progress.setValue(percent)
-        else:
-            self.test_progress.setValue(percent)
+        self.test_progress.setVisible(True)
+        self.test_percent.setVisible(True)
+        self.test_progress.setValue(percent)
+        self.test_percent.setText(f'{percent}%')
         self.test_details.setText(text)
 
     def completed(self,key,result,error):
@@ -520,6 +587,7 @@ class NetPilot(QMainWindow):
             if key=='warp':self.warp_pending=False
             self.note(f'{key}: {error}',True)
             self.test_progress.setVisible(False)
+            self.test_percent.setVisible(False)
             return
         if key=='test':
             self.test_running=False;self.cancel.clear();self.test_button.setText('Подобрать стратегию');self.test_button.setEnabled(True)
@@ -533,10 +601,12 @@ class NetPilot(QMainWindow):
                 self.note('Подбор завершён: '+best['strategy'])
                 if self.tray.isVisible():self.tray.showMessage('NetPilot',('Применена: ' if self.managed_pids else 'Подобрана: ')+best['strategy'],QSystemTrayIcon.MessageIcon.Information,5000)
             else:
-                self.strategy_name.setText('Нет улучшения')
-                self.test_details.setText('Все стратегии завершились ошибкой или не дали успешных HTTPS-ответов.')
-                self.note('Не удалось определить подходящую стратегию')
-            self.test_progress.setValue(100)
+                self.strategy_name.setText('Нет подтверждённых ответов')
+                errors=[r.get('error') for r in result.get('results',[]) if r.get('error')]
+                self.test_details.setText((errors[0][:120] if errors else 'Проверьте curl.exe, DNS и настройки сети. Это не означает, что Zapret не работает.'))
+                self.note('Тест не смог подтвердить доступность. Проверьте диагностику.')
+            self.test_progress.setValue(100);self.test_percent.setText('100%')
+            QTimer.singleShot(1600, self._hide_completed_progress)
         elif key=='activate':
             self.managed_pids=result
             self.note('Zapret запущен до выхода из NetPilot')
@@ -546,7 +616,7 @@ class NetPilot(QMainWindow):
             s=str(result).lower()
             self.warp_connected='connected' in s and 'disconnected' not in s
         elif key=='install':
-            self.note('Установлено: '+', '.join(result));self.test_progress.setVisible(False)
+            self.note('Установлено: '+', '.join(result));self.test_progress.setVisible(False);self.test_percent.setVisible(False)
         elif key=='updates':
             self.latest=result
             changed=[(k,v) for k,v in result.items()
@@ -567,6 +637,11 @@ class NetPilot(QMainWindow):
         elif key=='ipset':self.note(f'IPSet обновлён: {result} строк')
         elif key=='stop':self.managed_pids=[];self.note('Zapret остановлен')
         self.refresh()
+
+    def _hide_completed_progress(self):
+        if not self.test_running and 'install' not in self.running:
+            self.test_progress.setVisible(False)
+            self.test_percent.setVisible(False)
 
     def refresh(self):
         z=m.sub_dir(self.cfg,'zapret');t=m.sub_dir(self.cfg,'telegram')/'TgWsProxy_windows.exe'
@@ -619,7 +694,7 @@ class NetPilot(QMainWindow):
             try:
                 tg.stop(self.telegram_proc)
                 self.telegram_proc = None
-                self.note('Telegram Proxy остановлен')
+                self.note('Прокси остановлен. Если Telegram остался без сети, отключите прокси в Telegram Desktop.')
             except Exception as exc:
                 self.note('Не удалось остановить Telegram Proxy: ' + str(exc), True)
             self.refresh()
@@ -628,7 +703,8 @@ class NetPilot(QMainWindow):
             proc = tg.spawn(self.cfg)
             m.write_cfg(self.cfg)  # Persist the 32-character MTProto secret.
             self.telegram_proc = proc
-            self.note('Telegram Proxy запускается без отдельного значка')
+            self.note('Подключаем Telegram Proxy…')
+            self._tg_checks=0
             QTimer.singleShot(900, self.check_telegram_started)
         except Exception as exc:
             self.telegram_proc = None
@@ -636,17 +712,33 @@ class NetPilot(QMainWindow):
         self.refresh()
 
     def check_telegram_started(self):
-        if self.telegram_proc and self.telegram_proc.poll() is not None:
+        proc=self.telegram_proc
+        if not proc:
+            return
+        if proc.poll() is not None:
             self.note('Telegram Proxy завершился. Проверьте telegram-worker-error.log.', True)
-            self.telegram_proc = None
+            self.telegram_proc=None
             self.refresh()
+            return
+        if tg.port_in_use():
+            self.note('Telegram Proxy включён · Telegram Desktop подключается…')
+            if self.cfg.get('telegram_auto_connect',True):
+                # Official upstream uses tg://proxy; Telegram may ask confirmation.
+                self.connect_telegram()
+            self.refresh()
+            return
+        self._tg_checks=getattr(self,'_tg_checks',0)+1
+        if self._tg_checks<9:
+            QTimer.singleShot(700,self.check_telegram_started)
+        else:
+            self.note('Прокси не открыл порт 1443. Проверьте журнал.',True)
 
     def connect_telegram(self):
-        from PySide6.QtGui import QDesktopServices
         from PySide6.QtCore import QUrl
         secret = tg.get_secret(self.cfg)
         m.write_cfg(self.cfg)
-        QDesktopServices.openUrl(QUrl(tg.connect_url(secret)))
+        if not QDesktopServices.openUrl(QUrl(tg.connect_url(secret))):
+            self.note('Не удалось открыть Telegram Desktop. Проверьте установку Telegram.',True)
 
     def toggle_warp(self):
         if self.warp_pending:return
@@ -676,17 +768,29 @@ class NetPilot(QMainWindow):
                 self.elevate('--test')
             return
         try:
-            files=b.preflight(folder);catalog=load_catalog(folder)
+            catalog=load_catalog(folder)
+            files=m.list_strategies(folder)
+            if not files:raise RuntimeError('Стратегии general*.bat не найдены')
+            if m.service_state('zapret')!='not_installed':
+                raise RuntimeError('Обнаружена служба Zapret. Для теста отключите её в Flowseal.')
+            import psutil
+            owned=set(self.managed_pids)
+            external=[p.pid for p in psutil.process_iter(['name'])
+                      if (p.info.get('name') or '').lower()=='winws.exe' and p.pid not in owned]
+            if external:raise RuntimeError('Есть другой процесс winws.exe. NetPilot не будет его останавливать.')
         except Exception as exc:QMessageBox.warning(self,'Тестирование',str(exc));return
         checks=len(files)*len(catalog.hosts)
         if not self.confirm('Подбор стратегии',f'{len(files)} стратегий, {len(catalog.hosts)} доменов, всего {checks} HTTPS-запросов. Проверка может длиться долго и временно влиять на сеть. Начать?'):
             return
         self.cancel.clear();self.test_running=True
-        self.test_progress.setVisible(True);self.test_progress.setValue(0)
+        self.test_progress.setVisible(True);self.test_percent.setVisible(True);self.test_progress.setValue(0);self.test_percent.setText('0%')
         self.test_button.setText('Остановить проверку');self.test_button.setEnabled(True)
         self.test_details.setText('Запускаем тестирование…')
         apply=self.cfg.get('auto_apply',False)
-        self.job('test',lambda:b.benchmark(folder,lambda n,s:self.bus.progress.emit(n,s),self.cancel,keep_best=apply))
+        previously_owned=list(self.managed_pids)
+        previous_name=self.cfg.get('strategy','general.bat')
+        self.job('test',lambda:b.benchmark(folder,lambda n,s:self.bus.progress.emit(n,s),self.cancel,
+            keep_best=apply,owned_pids=previously_owned,previous_strategy=previous_name))
 
     def elevate(self,flag='--elevated'):
         if os.name!='nt':return
