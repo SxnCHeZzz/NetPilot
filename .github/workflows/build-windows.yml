@@ -1,0 +1,38 @@
+name: Windows prerelease
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python requirements
+        run: python -m pip install -r requirements.txt
+      - name: Tests (including offscreen UI)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -v
+      - name: Build UI app
+        run: python -m PyInstaller --clean --noconfirm --onedir --windowed --name NetPilot --icon assets\netpilot.ico --add-data "assets;assets" --collect-all proxy --collect-all utils --paths src src\app.py
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+      - name: Installer
+        shell: pwsh
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\NetPilot.iss'
+      - name: Portable ZIP
+        shell: pwsh
+        run: Compress-Archive -LiteralPath 'dist/NetPilot','LICENSE','THIRD_PARTY_NOTICES.txt' -DestinationPath 'dist/NetPilot-Portable.zip'
+      - name: Upload Windows deliverables
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetPilot-0.5.1-RC2-Windows
+          path: |
+            dist/installer/NetPilotSetup.exe
+            dist/NetPilot-Portable.zip

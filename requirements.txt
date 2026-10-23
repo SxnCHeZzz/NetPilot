@@ -1,0 +1,7 @@
+PySide6>=6.7,<7
+pyinstaller>=6.9,<7
+psutil>=5.9,<8
+
+# Official Flowseal headless console engine, pinned to a reviewed source commit.
+# No second Telegram tray window. Rebuilding NetPilot updates this dependency.
+tg-ws-proxy @ https://github.com/Flowseal/tg-ws-proxy/archive/307a384ab7f522e34bb1a045884d0bd90f40bee5.zip

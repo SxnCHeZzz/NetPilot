@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Windows build outputs
+build/
+dist/
+*.spec
+*.exe
+*.msi
+*.zip
+
+# Local runtime state and secrets
+.env
+.env.*
+settings-v*.json
+benchmark-last.json
+telegram-worker-error.log
+components/
+*.log
+*.tmp
+*.bak
+*.previous/
+
+# Tools
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
