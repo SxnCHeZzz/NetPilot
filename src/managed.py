@@ -27,7 +27,7 @@ ASSETS = Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent.parent)) / 
 DOMAINS_FILE = ASSETS / 'domains.txt'
 CLOUDFLARE_FILE = ASSETS / 'cloudflare-domains.txt'
 DEFAULT = {'components_dir': str(COMPONENTS), 'strategy':'general.bat',
-           'auto_check': True, 'quiet_games': True, 'auto_apply': True, 'auto_upgrade': False, 'start_hidden': False, 'installed':{}, 'language':'ru', 'telegram_secret':''}
+           'auto_check': True, 'auto_upgrade': False, 'start_hidden': False, 'installed':{}, 'language':'ru', 'telegram_secret':''}
 
 
 def read_cfg():
@@ -42,6 +42,8 @@ def read_cfg():
 
 
 def write_cfg(config):
+    # v0.5.4 removes two obsolete preferences. Ignore values in old settings.
+    config = {key: value for key,value in config.items() if key not in ('auto_apply','quiet_games')}
     ROOT.mkdir(parents=True, exist_ok=True)
     tmp = SETTINGS.with_suffix('.tmp')
     tmp.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding='utf-8')

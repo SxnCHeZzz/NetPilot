@@ -14,14 +14,25 @@ class UserSettingsTests(unittest.TestCase):
             root=Path(folder)
             with patch.object(managed,'ROOT',root), patch.object(managed,'SETTINGS',root/'settings.json'):
                 obj=managed.read_cfg()
-                obj['auto_apply']=False
                 obj['auto_upgrade']=True
                 obj['start_hidden']=True
                 managed.write_cfg(obj)
                 second=managed.read_cfg()
-                self.assertIs(second['auto_apply'], False)
                 self.assertIs(second['auto_upgrade'], True)
                 self.assertIs(second['start_hidden'], True)
+
+    def test_obsolete_preferences_do_not_come_back(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            with patch.object(managed,'ROOT',root), patch.object(managed,'SETTINGS',root/'settings.json'):
+                cfg=managed.read_cfg()
+                cfg['auto_apply']=False
+                cfg['quiet_games']=True
+                managed.write_cfg(cfg)
+                new=managed.read_cfg()
+                self.assertNotIn('auto_apply',new)
+                self.assertNotIn('quiet_games',new)
+                self.assertNotIn('auto_apply',(root/'settings.json').read_text())
 
     def test_default_is_opt_in_to_component_auto_upgrades(self):
         self.assertFalse(managed.DEFAULT['auto_upgrade'])

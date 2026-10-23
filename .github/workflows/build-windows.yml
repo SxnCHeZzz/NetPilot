@@ -32,7 +32,7 @@ jobs:
       - name: Upload Windows deliverables
         uses: actions/upload-artifact@v4
         with:
-          name: NetPilot-0.5.2-RC3-Windows
+          name: NetPilot-0.5.4-RC5-Windows
           path: |
             dist/installer/NetPilotSetup.exe
             dist/NetPilot-Portable.zip

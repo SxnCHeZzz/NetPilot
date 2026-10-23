@@ -2,7 +2,7 @@
 
 A compact Windows controller for [Zapret](https://github.com/Flowseal/zapret-discord-youtube), [TG WS Proxy](https://github.com/Flowseal/tg-ws-proxy), and [Cloudflare WARP](https://one.one.one.one/).
 
-**Status:** `0.5.2-rc3` — private testing release. Not affiliated with Flowseal or Cloudflare.
+**Status:** `0.5.4-rc5` — private testing release. Not affiliated with Flowseal or Cloudflare.
 
 NetPilot keeps the three connections under one tray icon. The application downloads the supported upstream components, starts and stops its own processes, and helps compare Zapret configurations. Network drivers and administrator actions still require Windows approval.
 
@@ -10,10 +10,22 @@ NetPilot keeps the three connections under one tray icon. The application downlo
 
 For Windows 10/11 x64:
 
-1. Install [Python 3.12](https://www.python.org/downloads/) to build from source. Install [Inno Setup 6](https://jrsoftware.org/isinfo.php) if you want the full Windows installer.
-2. Run **`BUILD_EXE.bat`** from this repository. The script installs dependencies, runs tests, and bundles the app.
-3. Use `dist/installer/NetPilotSetup.exe` or `dist/NetPilot/NetPilot.exe` to start. The second option requires the **whole `dist/NetPilot` directory**.
-4. On first launch, allow NetPilot to download Flowseal's Zapret into its components directory. WARP installation is a separate opt-in step.
+1. Open this repository's **Actions → Windows prerelease → Run workflow**. It runs tests and builds the installer and portable distribution on Windows.
+2. Download the resulting **NetPilot-0.5.4-RC5-Windows** artifact from that workflow run.
+3. For installation, use **`NetPilotSetup.exe`**. For portable use, extract **`NetPilot-Portable.zip`** and run `NetPilot.exe` from the extracted `NetPilot` directory; the exe depends on the other bundled files.
+4. On first launch, choose Zapret and/or the official Cloudflare WARP installer. Telegram Proxy is already bundled; WARP is installed by winget to its official directory with Windows consent.
+
+The project deliberately does not track compiled binaries, `dist/`, `build/`, or local settings. Place tested `NetPilotSetup.exe` and `NetPilot-Portable.zip` under **GitHub Releases**, mark release candidates as **Pre-release**. The repository includes a Windows Actions build and does not require a batch build script.
+
+For developers who prefer building locally on Windows:
+
+```powershell
+py -m pip install -r requirements.txt
+py -m unittest discover -s tests -v
+py -m PyInstaller --clean --noconfirm --onedir --windowed --name NetPilot --icon assets\netpilot.ico --add-data "assets;assets" --collect-all proxy --collect-all utils --paths src src\app.py
+```
+
+[Inno Setup 6](https://jrsoftware.org/isinfo.php) can compile `installer/NetPilot.iss` into `NetPilotSetup.exe` after the PyInstaller build.
 
 For development:
 
@@ -23,7 +35,7 @@ py -m unittest discover -s tests -v
 py src\app.py
 ```
 
-The Windows GitHub Actions workflow builds the installer and portable ZIP when triggered manually or by a `v*` tag. Binary releases belong in **Releases**, not in the Git repository.
+The Windows GitHub Actions workflow builds the installer and portable ZIP when triggered manually or by a `v*` tag. Build artifacts are downloadable from the workflow run; publishing them as a GitHub Release is a separate step. Binary releases belong in **Releases**, not in the Git repository.
 
 ## Use
 
@@ -62,7 +74,7 @@ Application state and the generated Telegram secret are stored outside this repo
 
 ## Current limitations
 
-- This is a **release candidate**, not a verified Windows production build. Windows/WinDivert, Telegram Desktop integration, dialogs and installer behavior must be tested on a real PC.
+- This is a **release candidate**, not a verified Windows production build. Windows/WinDivert, Telegram Desktop integration, the new in-window confirmation sheets and installer behavior must be tested on a real PC.
 - TLS HEAD checks do not verify live streams, voice calls or UDP/QUIC. `curl` behavior can also vary with network policies and its Windows TLS backend.
 - Full automated management of every option in Flowseal's changing `service.bat` is not yet implemented. The upstream tool remains available under advanced settings.
 - A successful local proxy startup does not mean Telegram Desktop accepted the proxy: the user may need to confirm the link.
@@ -71,10 +83,27 @@ Application state and the generated Telegram secret are stored outside this repo
 
 NetPilot is an independent project. Its own source is MIT-licensed (see `LICENSE`). TG WS Proxy's bundled console engine is © Flowseal and MIT-licensed; the complete attribution is in `THIRD_PARTY_NOTICES.txt`. Zapret and WARP remain third-party programs with their respective terms and update channels.
 
-## 0.5.2-rc3
+## 0.5.3-rc4 (previous)
 
-- Use Flowseal-style curl/TLS checks alongside the installed hostlists; report diagnostic failures instead of declaring a working strategy broken.
-- Restore a NetPilot-managed strategy after a failed or cancelled test; never terminate unrelated services.
-- Open Telegram Desktop's proxy link automatically after the managed local proxy becomes ready.
-- Move confirmation dialogs above the always-on-top flyout.
-- Replace font-dependent symbols with consistent vector glyphs, make header controls easier to click, and show progress percentages separately from the thin bar.
+- Move confirmations, warnings, component setup and advanced options **inside** the main flyout; no secondary Qt popups for these actions.
+- Keep Windows' native UAC and file chooser prompts intact.
+- Replace text-symbol window controls with consistent painted Back / Settings / Minimize icons.
+- Remove the duplicate bottom back button in Settings.
+- Retain Flowseal curl/TLS checks, safe process ownership, Telegram Desktop proxy-link integration, and the existing tray position logic.
+
+### Prior changes (0.5.2)
+
+- Added Flowseal-style curl/TLS checks using installed hostlists and diagnostic output.
+- Restored a managed Zapret configuration after failed/cancelled tests, without touching unrelated processes.
+- Added Telegram Desktop proxy link after the local proxy is ready.
+
+## 0.5.4-rc5 — setup and preferences cleanup
+
+- Removed the obsolete **Quiet during games** preference; Windows manages Do Not Disturb.
+- Removed the **Automatically apply winner** switch. Following a successful benchmark, NetPilot now attempts to activate the winning configuration automatically. A failed or cancelled benchmark restores the NetPilot-managed prior process when possible; other software and Windows services remain untouched.
+- First-run and **Components** dialogs now offer **Zapret + official Cloudflare WARP**, replacing the redundant disabled Telegram Proxy checkbox. Telegram's console engine is bundled and does not require a separate download.
+- WARP installation runs through `winget` and installs into Cloudflare's normal Windows location, not the optional Zapret folder. Windows UAC prompts remain visible and require the user's approval.
+- `WinError 10013` download failures now display an actionable network/firewall troubleshooting message.
+- Existing user preferences are preserved, except the removed obsolete switches.
+
+Note: a good HTTPS benchmark score is not a guarantee that Discord voice, video streaming or WARP connectivity will work. Real driver/installer tests require Windows.

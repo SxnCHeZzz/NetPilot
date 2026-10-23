@@ -32,3 +32,11 @@ components/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local build environments and workstation files
+.venv*/
+*.pfx
+*.p12
+*.key
+*.pem
+*.secrets.*

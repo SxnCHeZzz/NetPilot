@@ -29,7 +29,7 @@ if '--tg-headless' in sys.argv:
         raise
     sys.exit(0)
 
-from PySide6.QtCore import Qt, QObject, Signal, QTimer, QPointF
+from PySide6.QtCore import Qt, QObject, Signal, QTimer, QPointF, QEventLoop, QEvent
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QBrush, QCursor, QPolygonF, QPainterPath, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QFrame, QHBoxLayout,
@@ -43,7 +43,7 @@ from catalog import load_catalog
 import telegram_headless as tg
 from tray_position import Rect, find_overflow_rect, physical_to_qt, centered
 
-VERSION = '0.5.2-rc3'
+VERSION = '0.5.4-rc5'
 PINK = '#FF4DA6'
 CSS = '''
 *{font-family:'Segoe UI';font-size:12px;color:#F4F2F8}
@@ -67,6 +67,11 @@ QPushButton:disabled{color:#777482;background:#23212A;border-color:#282632}
 QPushButton#primary{background:#E63E95;border:1px solid #F45BAA;color:white;font-weight:750}
 QPushButton#primary:hover{background:#FF54A6}
 QPushButton#icon{background:#25232E;border:1px solid #302D3A;min-width:27px;min-height:26px;padding:5px;font-size:18px;font-weight:800}
+QFrame#dialogCard{background:#1B1A24;border:1px solid #524254;border-radius:17px}
+QLabel#dialogTitle{font-size:15px;font-weight:750}
+QPushButton#dialogSecondary{background:#2C2935;border:1px solid #433B4A}
+QPushButton#dialogSecondary:hover{background:#383343}
+QWidget#dialogShade{background:rgba(5,5,9,188);border-radius:17px}
 QPushButton#quiet{background:transparent;border:1px solid #292630;color:#BFB9C9}
 QPushButton#quiet:hover{background:#282530}
 QPushButton#danger{color:#FFADC6;border:1px solid #503346}
@@ -82,34 +87,170 @@ QToolTip{background:#272331;color:white;border:1px solid #564557;padding:6px}
 '''
 
 
-class QMessageBox(NativeMessageBox):
-    """Windows Tool+AlwaysOnTop owners need explicitly foregrounded dialogs."""
+class InlineModal(QWidget):
+    """Same-window, blocking-by-choice panel: never creates a top-level dialog.
+
+    A nested Qt event loop preserves existing synchronous confirm APIs while
+    keeping rendering and worker signals alive. The shade consumes mouse input
+    so the user cannot accidentally change controls behind a confirmation.
+    """
+    def __init__(self, owner, title='', message='', question=False, custom=None):
+        super().__init__(owner.centralWidget())
+        self.owner = owner
+        self.value = False
+        self.loop = QEventLoop(self)
+        self.setObjectName('dialogShade')
+        self.setGeometry(owner.centralWidget().rect())
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.addStretch(1)
+        self.card = QFrame(objectName='dialogCard')
+        self.card.setMaximumWidth(372)
+        self.card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        col = QVBoxLayout(self.card)
+        col.setContentsMargins(17, 18, 17, 17)
+        col.setSpacing(13)
+        if custom is not None:
+            self.card.setMaximumWidth(385)
+            col.setContentsMargins(7, 7, 7, 7)
+            custom.setParent(self.card)
+            col.addWidget(custom)
+            custom._active_modal = self
+        else:
+            heading = QLabel(title)
+            heading.setObjectName('dialogTitle')
+            heading.setWordWrap(True)
+            col.addWidget(heading)
+            body = QLabel(str(message))
+            body.setObjectName('muted')
+            body.setWordWrap(True)
+            body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            col.addWidget(body)
+            actions = QHBoxLayout()
+            actions.setSpacing(9)
+            if question:
+                cancel = QPushButton('Отмена')
+                cancel.setObjectName('dialogSecondary')
+                cancel.clicked.connect(lambda: self.finish(False))
+                actions.addWidget(cancel)
+            else:
+                actions.addStretch()
+            go = QPushButton('Подтвердить' if question else 'Понятно')
+            go.setObjectName('primary')
+            go.clicked.connect(lambda: self.finish(True))
+            actions.addWidget(go)
+            col.addLayout(actions)
+        layout.addWidget(self.card)
+        layout.addStretch(1)
+        # The root can be resized by DPI/layout updates while the sheet is up.
+        owner.centralWidget().installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if obj is self.owner.centralWidget() and event.type() == QEvent.Type.Resize:
+            self.setGeometry(obj.rect())
+        return super().eventFilter(obj, event)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.finish(False)
+        else:
+            super().keyPressEvent(event)
+
+    def finish(self, value):
+        self.value = bool(value)
+        if self.loop.isRunning():
+            self.loop.quit()
+
+    def exec(self):
+        self.raise_()
+        self.show()
+        self.activateWindow()
+        self.setFocus()
+        self.loop.exec()
+        self.owner.centralWidget().removeEventFilter(self)
+        self.hide()
+        self.deleteLater()
+        return self.value
+
+
+class QMessageBox:
+    """Compatibility facade for existing call sites, rendered inside NetPilot."""
+    StandardButton = NativeMessageBox.StandardButton
+
     @staticmethod
-    def _show(parent, title, message, icon, buttons):
-        dlg = NativeMessageBox(parent)
-        dlg.setIcon(icon)
-        dlg.setWindowTitle(title)
-        dlg.setText(str(message))
-        dlg.setStandardButtons(buttons)
-        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
-        dlg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
-        dlg.setStyleSheet(CSS)
-        return NativeMessageBox.StandardButton(dlg.exec())
+    def _owner(parent):
+        current = parent
+        while current is not None:
+            if hasattr(current, 'inline_notice'):
+                return current
+            current = current.parentWidget() if hasattr(current, 'parentWidget') else None
+        return None
 
     @staticmethod
     def warning(parent, title, message):
-        return QMessageBox._show(parent,title,message,NativeMessageBox.Icon.Warning,
-                                 NativeMessageBox.StandardButton.Ok)
+        owner = QMessageBox._owner(parent)
+        if owner:
+            owner.inline_notice(title, message)
+        return NativeMessageBox.StandardButton.Ok
 
     @staticmethod
     def information(parent, title, message):
-        return QMessageBox._show(parent,title,message,NativeMessageBox.Icon.Information,
-                                 NativeMessageBox.StandardButton.Ok)
+        return QMessageBox.warning(parent, title, message)
 
     @staticmethod
-    def question(parent,title,message):
-        return QMessageBox._show(parent,title,message,NativeMessageBox.Icon.Question,
-                                 NativeMessageBox.StandardButton.Yes | NativeMessageBox.StandardButton.No)
+    def question(parent, title, message):
+        owner = QMessageBox._owner(parent)
+        if owner:
+            return (NativeMessageBox.StandardButton.Yes if owner.inline_confirm(title, message)
+                    else NativeMessageBox.StandardButton.No)
+        return NativeMessageBox.StandardButton.No
+
+
+class HeaderAction(QPushButton):
+    """Consistent vector navigation icons, independent of platform glyph fonts."""
+    def __init__(self, kind, parent=None):
+        super().__init__(parent)
+        self.kind = kind
+        self.setFixedSize(36, 36)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip({'back':'Назад', 'settings':'Настройки', 'minimize':'Свернуть в трей'}[kind])
+        self.setAccessibleName(self.toolTip())
+
+    def set_kind(self, kind):
+        self.kind = kind
+        self.setToolTip({'back':'Назад', 'settings':'Настройки', 'minimize':'Свернуть в трей'}[kind])
+        self.setAccessibleName(self.toolTip())
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor('#786079') if self.underMouse() else QColor('#39313E'), 1))
+        p.setBrush(QColor('#393040') if self.underMouse() else QColor('#25232E'))
+        p.drawRoundedRect(1, 1, self.width()-2, self.height()-2, 11, 11)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        pen = QPen(QColor('#FF7ABD') if self.underMouse() else QColor('#F3F0F8'), 2.3)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        if self.kind == 'back':
+            p.drawLine(21, 11, 14, 18)
+            p.drawLine(14, 18, 21, 25)
+            p.drawLine(14, 18, 24, 18)
+        elif self.kind == 'minimize':
+            p.drawLine(12, 19, 24, 19)
+        elif self.kind == 'settings':
+            from math import sin, cos, pi
+            # Compact gear ring with 8 teeth, all drawn with a single pen.
+            p.drawEllipse(QPointF(18, 18), 5.2, 5.2)
+            p.drawEllipse(QPointF(18, 18), 1.3, 1.3)
+            for i in range(8):
+                a = i*pi/4
+                p.drawLine(QPointF(18+7*cos(a),18+7*sin(a)),
+                           QPointF(18+9*cos(a),18+9*sin(a)))
+        p.end()
 
 
 class ServiceGlyph(QWidget):
@@ -187,39 +328,48 @@ class Bus(QObject):
     progress = Signal(int, str)
 
 
-class SetupDialog(QDialog):
+class SetupDialog(QFrame):
     """First-run component acquisition happens after the installer, with consent."""
     def __init__(self, parent, cfg):
         super().__init__(parent)
         self.setWindowTitle('NetPilot · Подготовка')
-        self.setFixedWidth(440)
+        self.setFixedWidth(340)
         box = QVBoxLayout(self); box.setContentsMargins(22, 22, 22, 22); box.setSpacing(13)
         title = QLabel('Подготовим NetPilot'); title.setObjectName('brand'); box.addWidget(title)
-        text = QLabel('Загрузим компоненты из официальных релизов Flowseal.\nПуть можно изменить. WARP устанавливается отдельно с подтверждением Windows.')
+        text = QLabel('Подготовим Zapret и официальный Cloudflare WARP.\nTelegram Proxy уже встроен и не требует загрузки.')
         text.setObjectName('muted'); text.setWordWrap(True); box.addWidget(text)
         choose = QHBoxLayout(); box.addLayout(choose)
         self.path = QLineEdit(cfg['components_dir']); choose.addWidget(self.path, 1)
         browse = QPushButton('…'); browse.clicked.connect(self.browse); choose.addWidget(browse)
         self.z = QCheckBox('Zapret · Discord / YouTube'); self.z.setChecked(True); box.addWidget(self.z)
-        self.t = QCheckBox('Telegram Proxy (встроен, отдельная загрузка не нужна)'); self.t.setChecked(False); self.t.setEnabled(False); box.addWidget(self.t)
-        note = QLabel('Инсталлятор NetPilot не устанавливает сторонние сетевые драйверы без вашего разрешения.')
+        self.w = QCheckBox('Cloudflare WARP · официальный клиент')
+        self.w.setChecked(m.warp_cli() is None)
+        box.addWidget(self.w)
+        hint = QLabel('WARP устанавливается через winget в системный каталог Cloudflare, независимо от выбранной папки.')
+        hint.setWordWrap(True); hint.setObjectName('small'); box.addWidget(hint)
+        note = QLabel('Windows может запросить разрешение UAC для установки WARP. NetPilot не подтверждает такие запросы автоматически.')
         note.setWordWrap(True); note.setObjectName('muted'); box.addWidget(note)
         actions = QHBoxLayout(); box.addLayout(actions)
         skip = QPushButton('Позже'); skip.clicked.connect(self.reject); actions.addWidget(skip)
         go = QPushButton('Загрузить'); go.setObjectName('primary'); go.clicked.connect(self.accept); actions.addWidget(go)
+
+    def exec(self):
+        return QDialog.DialogCode.Accepted if self.parent().inline_custom(self) else QDialog.DialogCode.Rejected
+
+    def accept(self): self._active_modal.finish(True)
+    def reject(self): self._active_modal.finish(False)
 
     def browse(self):
         directory = QFileDialog.getExistingDirectory(self, 'Папка компонентов', self.path.text())
         if directory: self.path.setText(directory)
 
 
-class ExpertDialog(QDialog):
+class ExpertDialog(QFrame):
     """Advanced upstream controls stay hidden unless explicitly requested."""
     def __init__(self, owner):
         super().__init__(owner)
         self.owner = owner
-        self.setWindowTitle('NetPilot · Дополнительно')
-        self.resize(440, 530)
+        self.setFixedSize(342, 400)
         outer = QVBoxLayout(self)
         title = QLabel('Расширенные параметры Zapret'); title.setObjectName('heading'); outer.addWidget(title)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); outer.addWidget(scroll, 1)
@@ -251,7 +401,13 @@ class ExpertDialog(QDialog):
         hint = QLabel('Изменения настроек Flowseal требуют повторного запуска стратегии.\nПолные upstream-тесты, замена fake-файлов и установка службы доступны в оригинальном service.bat.')
         hint.setObjectName('muted'); hint.setWordWrap(True); layout.addWidget(hint)
         layout.addStretch()
-        close = QPushButton('Закрыть'); close.clicked.connect(self.close); outer.addWidget(close)
+        close = QPushButton('Готово'); close.clicked.connect(self.close); outer.addWidget(close)
+
+    def exec(self):
+        return self.owner.inline_custom(self)
+
+    def close(self):
+        self._active_modal.finish(False)
 
     def err(self, title, op):
         try: op(); self.owner.note('Сохранено. Перезапусти Zapret для применения.')
@@ -276,10 +432,12 @@ class ExpertDialog(QDialog):
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, 'Адреса проверки', str(exc))
             return
-        dialog = QDialog(self)
-        dialog.setWindowTitle(f'Проверяемые адреса · {len(catalog.hosts)}')
-        dialog.resize(490, 550)
+        dialog = QFrame(self.owner)
+        dialog.setFixedSize(340, 395)
         lay = QVBoxLayout(dialog)
+        lay.setContentsMargins(8, 8, 8, 8)
+        title = QLabel(f'Проверяемые адреса · {len(catalog.hosts)}')
+        title.setObjectName('heading'); lay.addWidget(title)
         hint = QLabel('Взяты из текущих списков Flowseal, включая Cloudflare из пользовательского списка. HTTPS-тест не подтверждает работу UDP или видео.')
         hint.setWordWrap(True); hint.setObjectName('muted'); lay.addWidget(hint)
         source_text = ', '.join(f'{name}: {count}' for name, count in catalog.sources.items())
@@ -292,8 +450,8 @@ class ExpertDialog(QDialog):
             editor.setPlainText('\n'.join(filtered))
         search.textChanged.connect(update)
         update()
-        close = QPushButton('Закрыть'); close.clicked.connect(dialog.accept); lay.addWidget(close)
-        dialog.exec()
+        close = QPushButton('Закрыть'); close.clicked.connect(lambda: dialog._active_modal.finish(False)); lay.addWidget(close)
+        self.owner.inline_custom(dialog)
 
     def update_ipset(self):
         if self.owner.confirm('Обновить IPSet', 'Загрузить официальный IPSet и сохранить резервную копию?'):
@@ -360,9 +518,9 @@ class NetPilot(QMainWindow):
         header = QHBoxLayout(); box.addLayout(header)
         title = QLabel('◆  NetPilot'); title.setObjectName('brand'); header.addWidget(title)
         header.addStretch()
-        self.settings_btn = QPushButton('⚙'); self.settings_btn.setObjectName('icon'); self.settings_btn.setToolTip('Настройки')
+        self.settings_btn = HeaderAction('settings')
         self.settings_btn.clicked.connect(self.toggle_page); header.addWidget(self.settings_btn)
-        hide = QPushButton('—'); hide.setObjectName('icon'); hide.setToolTip('Свернуть в трей')
+        hide = HeaderAction('minimize')
         hide.clicked.connect(self.hide); header.addWidget(hide)
         self.pages = QStackedWidget(); box.addWidget(self.pages, 1)
         self._home(); self._settings()
@@ -409,7 +567,7 @@ class NetPilot(QMainWindow):
         bottom=QHBoxLayout();content.addLayout(bottom)
         self.install_button=QPushButton('↓  Компоненты');self.install_button.setObjectName('quiet');self.install_button.clicked.connect(self.install_dialog);bottom.addWidget(self.install_button)
         bottom.addStretch()
-        about=QLabel('v0.5.2 RC3');about.setObjectName('small');bottom.addWidget(about)
+        about=QLabel('v0.5.4 RC5');about.setObjectName('small');bottom.addWidget(about)
         self.load_last_test()
 
     def _setting_row(self, parent, name, value, handler):
@@ -430,11 +588,9 @@ class NetPilot(QMainWindow):
         self._setting_row(self.prefs,'Запускать свёрнутым',self.cfg.get('start_hidden',False),lambda v:self.preference('start_hidden',v))
         self._setting_row(self.prefs,'Проверять обновления',self.cfg.get('auto_check',True),lambda v:self.preference('auto_check',v))
         self._setting_row(self.prefs,'Автоустановка обновлений',self.cfg.get('auto_upgrade',False),lambda v:self.preference('auto_upgrade',v))
-        self._setting_row(self.prefs,'Автоматически применять лидера',self.cfg.get('auto_apply',False),lambda v:self.preference('auto_apply',v))
-        self._setting_row(self.prefs,'Тишина во время игр',self.cfg.get('quiet_games',True),lambda v:self.preference('quiet_games',v))
         divider=QLabel('КОМПОНЕНТЫ И ОБСЛУЖИВАНИЕ');divider.setObjectName('eyebrow');self.prefs.addWidget(divider)
         for title, handler in [
-            ('Установить / обновить Zapret',self.install_dialog),
+            ('Установить компоненты',self.install_dialog),
             ('Проверить новые версии',lambda:self.check_updates(True)),
             ('Откатить Zapret',lambda:self.rollback('zapret')),
                         ('Расширенные настройки Zapret',self.expert),
@@ -444,15 +600,23 @@ class NetPilot(QMainWindow):
         label=QLabel('NetPilot — неофициальное приложение. Flowseal и Cloudflare — самостоятельные проекты.');label.setWordWrap(True)
         label.setObjectName('muted');self.prefs.addWidget(label)
         self.prefs.addStretch()
-        done=QPushButton('←  Вернуться');done.clicked.connect(self.toggle_page);whole.addWidget(done)
 
     def toggle_page(self):
         self.pages.setCurrentIndex(1-self.pages.currentIndex())
-        self.settings_btn.setText('←' if self.pages.currentIndex() else '⚙')
+        self.settings_btn.set_kind('back' if self.pages.currentIndex() else 'settings')
 
     def note(self, message, error=False):
         self.message.setText(message[:280]); self.message.setObjectName('error' if error else 'muted')
         self.message.style().unpolish(self.message); self.message.style().polish(self.message)
+
+    def inline_confirm(self, title, message):
+        return InlineModal(self, title, message, question=True).exec()
+
+    def inline_notice(self, title, message):
+        return InlineModal(self, title, message).exec()
+
+    def inline_custom(self, widget):
+        return InlineModal(self, custom=widget).exec()
 
     def confirm(self, title, text):
         return QMessageBox.question(self,title,text)==QMessageBox.StandardButton.Yes
@@ -551,18 +715,38 @@ class NetPilot(QMainWindow):
             if not self.confirm('Путь для Flowseal','Flowseal рекомендует папку без пробелов и кириллицы. Выбранный путь может не работать со стратегиями. Использовать его всё равно?'):
                 return
         self.cfg['components_dir']=str(destination);m.write_cfg(self.cfg)
-        selected=['zapret'] if dialog.z.isChecked() else []
+        selected=[]
+        if dialog.z.isChecked(): selected.append('zapret')
+        if dialog.w.isChecked(): selected.append('warp')
         if not selected:return
         if self.managed_pids or (self.telegram_proc and self.telegram_proc.poll() is None) or self.test_running:
             QMessageBox.warning(self,'Обновление','Сначала отключите запущенные компоненты NetPilot.');return
+        # The wizard's checkbox is explicit consent to initiate the official
+        # WARP installer; Windows' elevation prompts remain outside our control.
         def task():
-            out=[]
+            installed=[]
+            failures=[]
             for i,kind in enumerate(selected):
-                self.bus.progress.emit(int(i*100/len(selected)),f'{kind}: поиск релиза…')
-                meta=m.release(kind)
-                m.install_component(self.cfg,meta,lambda p,t:self.bus.progress.emit(int((i*100+p)/len(selected)),t))
-                out.append(f"{kind}: {meta['tag']}")
-            return out
+                start=int(i*100/len(selected))
+                end=int((i+1)*100/len(selected))
+                self.bus.progress.emit(start, 'Подготовка ' + ('WARP' if kind=='warp' else 'Zapret') + '…')
+                try:
+                    if kind=='warp':
+                        if m.warp_cli():
+                            installed.append('WARP уже установлен')
+                        else:
+                            m.install_warp_silently()
+                            installed.append('Cloudflare WARP')
+                    else:
+                        meta=m.release(kind)
+                        m.install_component(self.cfg,meta,
+                            lambda pct,txt,start=start,end=end:self.bus.progress.emit(
+                                start+int((end-start)*pct/100),txt))
+                        installed.append(f"Zapret {meta['tag']}")
+                except Exception as exc:
+                    failures.append(f'{kind}: {exc}')
+                self.bus.progress.emit(end, 'Завершено: '+kind)
+            return {'installed':installed,'failures':failures}
         self.job('install',task)
 
     def job(self,key,fn):
@@ -616,7 +800,19 @@ class NetPilot(QMainWindow):
             s=str(result).lower()
             self.warp_connected='connected' in s and 'disconnected' not in s
         elif key=='install':
-            self.note('Установлено: '+', '.join(result));self.test_progress.setVisible(False);self.test_percent.setVisible(False)
+            installed=result.get('installed',[]) if isinstance(result,dict) else result
+            failures=result.get('failures',[]) if isinstance(result,dict) else []
+            if installed:
+                self.note('Готово: '+', '.join(installed))
+            if failures:
+                message='\n'.join(failures)
+                # Networking issues should be actionable rather than exposing
+                # only raw WinSock errors in the tiny status line.
+                if '10013' in message:
+                    message += ('\nWindows запретила сетевой доступ. Проверьте брандмауэр, '
+                                'антивирус, прокси и разрешения NetPilot; затем повторите.')
+                QMessageBox.warning(self,'Не всё удалось установить',message[:800])
+            self.test_progress.setVisible(False);self.test_percent.setVisible(False)
         elif key=='updates':
             self.latest=result
             changed=[(k,v) for k,v in result.items()
@@ -786,7 +982,9 @@ class NetPilot(QMainWindow):
         self.test_progress.setVisible(True);self.test_percent.setVisible(True);self.test_progress.setValue(0);self.test_percent.setText('0%')
         self.test_button.setText('Остановить проверку');self.test_button.setEnabled(True)
         self.test_details.setText('Запускаем тестирование…')
-        apply=self.cfg.get('auto_apply',False)
+        # A successful benchmark always applies its chosen configuration.
+        # Legacy 'auto_apply' settings must not silently disable this.
+        apply=True
         previously_owned=list(self.managed_pids)
         previous_name=self.cfg.get('strategy','general.bat')
         self.job('test',lambda:b.benchmark(folder,lambda n,s:self.bus.progress.emit(n,s),self.cancel,
