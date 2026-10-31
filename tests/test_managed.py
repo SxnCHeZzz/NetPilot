@@ -32,7 +32,7 @@ class TestManaged(unittest.TestCase):
             self.assertTrue(m.zapret_options(temp)['update'])
     def test_service_command_expands_selected_strategy(self):
         with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp);(root/'bin').mkdir();(root/'lists').mkdir();(root/'utils').mkdir()
+            root=Path(temp).resolve();(root/'bin').mkdir();(root/'lists').mkdir();(root/'utils').mkdir()
             (root/'bin'/'winws.exe').write_bytes(b'MZ')
             (root/'utils'/'game_filter.enabled').write_text('mode=all\ntcp=1000-2000\nudp=3000-4000\n')
             (root/'general.bat').write_text(
