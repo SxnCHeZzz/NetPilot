@@ -169,6 +169,32 @@ def probe_host(host):
     return curl_probe(host)
 
 
+def quick_health(folder, limit=8):
+    """Small non-invasive reachability sample for automatic monitoring.
+
+    It never starts or stops WinDivert and therefore remains safe while the
+    selected strategy is running. A full benchmark is a separate escalation.
+    """
+    folder=Path(folder).resolve()
+    targets=[]
+    seen=set()
+    for _name,host,url in parse_flowseal_targets(folder):
+        if url not in seen:
+            seen.add(url);targets.append((host,url))
+    if len(targets)<limit:
+        for host in load_catalog(folder).hosts:
+            url='https://'+host+'/'
+            if url not in seen:
+                seen.add(url);targets.append((host,url))
+            if len(targets)>=limit:break
+    targets=targets[:max(1,int(limit))]
+    if not targets:raise BenchmarkError('Нет адресов для автоматической проверки.')
+    probes=scan_items(targets,lambda item:curl_probe(item[0],url=item[1],timeout=4.0),
+                      threading.Event(),max_workers=min(8,len(targets)))
+    passed,latency=score(probes)
+    return {'passed':passed,'total':len(probes),'latency_ms':latency,'probes':probes}
+
+
 def probe_flowseal_set(folder, hosts, cancel, progress=None):
     """All explicit hostlist hosts plus Flowseal standard HTTP/TLS targets.
 

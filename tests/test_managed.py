@@ -30,6 +30,31 @@ class TestManaged(unittest.TestCase):
             with self.assertRaises(ValueError):m.set_game_filter(temp,'../../evil')
             m.set_upstream_check(temp,True)
             self.assertTrue(m.zapret_options(temp)['update'])
+    def test_service_command_expands_selected_strategy(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);(root/'bin').mkdir();(root/'lists').mkdir();(root/'utils').mkdir()
+            (root/'bin'/'winws.exe').write_bytes(b'MZ')
+            (root/'utils'/'game_filter.enabled').write_text('mode=all\ntcp=1000-2000\nudp=3000-4000\n')
+            (root/'general.bat').write_text(
+                '@echo off\nset "BIN=%~dp0bin\\"\nset "LISTS=%~dp0lists\\"\n'
+                'start "zapret: %~n0" /min "%BIN%winws.exe" --wf-tcp=%GameFilterTCP% ^\n'
+                '--wf-udp=%GameFilterUDP% --hostlist="%LISTS%list-general.txt"\n')
+            exe,args=m.zapret_service_command(root,'general.bat')
+            self.assertEqual(Path(exe),root/'bin'/'winws.exe')
+            self.assertIn('--wf-tcp=1000-2000',args)
+            self.assertIn('--wf-udp=3000-4000',args)
+            self.assertIn(str(root/'lists'/'list-general.txt'),args)
+            self.assertNotIn('%',args)
+            with self.assertRaises(ValueError):m.zapret_service_command(root,'../general.bat')
+    def test_foreign_service_is_never_replaced_or_removed(self):
+        with patch.object(m,'service_state',return_value='RUNNING'), \
+             patch.object(m,'zapret_service_owned',return_value=False):
+            with self.assertRaisesRegex(RuntimeError,'другим приложением'):
+                with patch.object(m.os,'name','nt'):
+                    m.install_zapret_service('.', 'general.bat')
+            with self.assertRaisesRegex(RuntimeError,'не NetPilot'):
+                with patch.object(m.os,'name','nt'):
+                    m.remove_zapret_service()
     def test_zip_slip_rejected(self):
         b=io.BytesIO()
         with zipfile.ZipFile(b,'w') as f:f.writestr('../evil.txt','evil')

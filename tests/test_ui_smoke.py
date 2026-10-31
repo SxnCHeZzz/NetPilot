@@ -29,9 +29,9 @@ class InterfaceSmoke(unittest.TestCase):
              patch.object(managed,'warp_cli',return_value=None):
             window=ui.NetPilot()
             try:
-                self.assertEqual(window.pages.count(),2)
+                self.assertEqual(window.pages.count(),3)
                 self.assertEqual(len(window.controls),3)
-                window.pages.setCurrentIndex(1)
+                window.open_details()
                 window.resize(432,572)
                 window.show()
                 self.qapp.processEvents()
@@ -39,10 +39,11 @@ class InterfaceSmoke(unittest.TestCase):
                 window.toggle_page()
                 self.assertEqual(window.pages.currentIndex(),0)
                 window.toggle_page()
-                self.assertEqual(window.pages.currentIndex(),1)
+                self.assertEqual(window.pages.currentIndex(),2)
             finally:
                 window.status_timer.stop()
                 window.daily_timer.stop()
+                window.auto_strategy_timer.stop()
                 window.tray.hide()
                 window.hide()
                 window.pool.shutdown(wait=False,cancel_futures=True)

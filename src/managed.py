@@ -27,7 +27,12 @@ ASSETS = Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent.parent)) / 
 DOMAINS_FILE = ASSETS / 'domains.txt'
 CLOUDFLARE_FILE = ASSETS / 'cloudflare-domains.txt'
 DEFAULT = {'components_dir': str(COMPONENTS), 'strategy':'general.bat',
-           'auto_check': True, 'auto_upgrade': False, 'start_hidden': False, 'installed':{}, 'language':'ru', 'telegram_secret':''}
+           'auto_check': True, 'auto_upgrade': False, 'auto_strategy': True,
+           'start_hidden': False, 'installed':{}, 'language':'ru', 'telegram_secret':''}
+
+ZAPRET_SERVICE = 'zapret'
+ZAPRET_OWNER_VALUE = 'NetPilotManaged'
+ZAPRET_STRATEGY_VALUE = 'zapret-discord-youtube'
 
 
 def read_cfg():
@@ -196,7 +201,7 @@ def install_component(config, meta, progress=None):
 
 def rollback_component(config,kind):
     dest=sub_dir(config,kind);old=dest.with_name(dest.name+'.previous')
-    if not old.exists():raise FileNotFoundError('No previous version available')
+    if not old.exists():raise FileNotFoundError('Резервной версии нет. Она создаётся при обновлении компонента.')
     temp=dest.with_name(dest.name+'.rollback-temp')
     if temp.exists():shutil.rmtree(temp)
     if dest.exists():dest.rename(temp)
@@ -243,6 +248,143 @@ def service_state(name):
     if res.returncode:return 'not_installed'
     match=re.search(r'\b(?:RUNNING|STOPPED|START_PENDING|STOP_PENDING)\b',res.stdout)
     return match.group(0) if match else 'unknown'
+
+
+def zapret_service_owned():
+    """Return True only for a service explicitly created by NetPilot."""
+    if os.name!='nt':return False
+    try:
+        import winreg
+        path=rf'SYSTEM\CurrentControlSet\Services\{ZAPRET_SERVICE}'
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,path) as key:
+            value,_=winreg.QueryValueEx(key,ZAPRET_OWNER_VALUE)
+            return str(value)=='1'
+    except OSError:return False
+
+
+def zapret_service_strategy():
+    if os.name!='nt':return ''
+    try:
+        import winreg
+        path=rf'SYSTEM\CurrentControlSet\Services\{ZAPRET_SERVICE}'
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,path) as key:
+            value,_=winreg.QueryValueEx(key,ZAPRET_STRATEGY_VALUE)
+            return str(value)
+    except OSError:return ''
+
+
+def _valid_port_range(value):
+    if not value:return None
+    parts=value.replace(' ','').split(',')
+    for part in parts:
+        match=re.fullmatch(r'(\d{1,5})(?:-(\d{1,5}))?',part)
+        if not match:return None
+        start=int(match.group(1));end=int(match.group(2) or start)
+        if not (1<=start<=end<=65535):return None
+    return ','.join(parts)
+
+
+def _game_filter_values(folder):
+    mode='disabled';tcp='1024-65535';udp='1024-65535'
+    flag=Path(folder)/'utils'/'game_filter.enabled'
+    if flag.is_file():
+        for line in flag.read_text(encoding='utf-8-sig',errors='replace').splitlines():
+            key,sep,value=line.partition('=')
+            key=key.strip().lower();value=value.strip()
+            if not sep and key in ('all','tcp','udp'):mode=key
+            elif key=='mode' and value.lower() in ('disabled','all','tcp','udp'):mode=value.lower()
+            elif key=='tcp':tcp=_valid_port_range(value) or tcp
+            elif key=='udp':udp=_valid_port_range(value) or udp
+    return {
+        'GameFilterTCP':tcp if mode in ('all','tcp') else '12',
+        'GameFilterUDP':udp if mode in ('all','udp') else '12',
+        'GameFilter':tcp if mode in ('all','tcp') else udp if mode=='udp' else '12',
+    }
+
+
+def zapret_service_command(folder,strategy):
+    """Parse the selected official Flowseal strategy into a service command line."""
+    base=Path(folder).resolve();name=Path(strategy).name
+    if name!=strategy or name not in list_strategies(base):
+        raise ValueError('Неизвестная стратегия Zapret.')
+    source=base/name
+    text=source.read_text(encoding='utf-8-sig',errors='replace')
+    joined=re.sub(r'\^\s*\r?\n',' ',text)
+    match=re.search(r'(?im)^.*?winws\.exe"\s+(.*)$',joined)
+    if not match:raise ValueError(f'{name}: не найдена команда winws.exe.')
+    args=match.group(1).strip()
+    values={'BIN':str(base/'bin')+'\\','LISTS':str(base/'lists')+'\\'}
+    values.update(_game_filter_values(base))
+    for key,value in values.items():args=re.sub(rf'%{re.escape(key)}%',lambda _m:value,args,flags=re.I)
+    unresolved=sorted(set(re.findall(r'%([^%]+)%',args)))
+    if unresolved:raise ValueError(f'{name}: неподдерживаемые переменные: '+', '.join(unresolved))
+    if '\r' in args or '\n' in args or not args.startswith('--'):
+        raise ValueError(f'{name}: неизвестный формат команды.')
+    return str(base/'bin'/'winws.exe'),args
+
+
+def _service_run(argv,timeout=20,allow=(0,)):
+    result=cli_run(argv,timeout)
+    if result.returncode not in allow:
+        message=(result.stderr or result.stdout or f'код {result.returncode}').strip()
+        raise RuntimeError(message[-700:])
+    return result
+
+
+def _wait_service_absent(timeout=6):
+    deadline=time.monotonic()+timeout
+    while time.monotonic()<deadline:
+        if service_state(ZAPRET_SERVICE)=='not_installed':return
+        time.sleep(.2)
+    raise RuntimeError('Windows ещё не завершила удаление службы Zapret. Повторите через несколько секунд.')
+
+
+def install_zapret_service(folder,strategy):
+    """Install an auto-start service while preserving foreign Zapret services."""
+    if os.name!='nt':raise RuntimeError('Служба Zapret доступна только в Windows.')
+    state=service_state(ZAPRET_SERVICE)
+    if state!='not_installed' and not zapret_service_owned():
+        raise RuntimeError('Служба Zapret уже установлена другим приложением. NetPilot не будет её заменять.')
+    exe,args=zapret_service_command(folder,strategy)
+    if not Path(exe).is_file():raise FileNotFoundError('Не найден bin\\winws.exe.')
+    lists=Path(folder)/'lists';lists.mkdir(parents=True,exist_ok=True)
+    defaults={'ipset-exclude-user.txt':'203.0.113.113/32\n',
+              'list-general-user.txt':'# Never leave this file empty\ndomain.example.abc\n',
+              'list-exclude-user.txt':'domain.example.abc\n'}
+    for filename,content in defaults.items():
+        target=lists/filename
+        if not target.exists():target.write_text(content,encoding='utf-8')
+    if state!='not_installed':
+        _service_run(['sc.exe','stop',ZAPRET_SERVICE],allow=(0,1062))
+        _service_run(['sc.exe','delete',ZAPRET_SERVICE])
+        _wait_service_absent()
+    bin_path=f'"{exe}" {args}'
+    _service_run(['sc.exe','create',ZAPRET_SERVICE,'binPath=',bin_path,
+                  'DisplayName=','zapret','start=','auto'])
+    try:
+        _service_run(['sc.exe','description',ZAPRET_SERVICE,'Zapret DPI bypass software'])
+        import winreg
+        path=rf'SYSTEM\CurrentControlSet\Services\{ZAPRET_SERVICE}'
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,path,0,winreg.KEY_SET_VALUE) as key:
+            winreg.SetValueEx(key,ZAPRET_OWNER_VALUE,0,winreg.REG_SZ,'1')
+            winreg.SetValueEx(key,ZAPRET_STRATEGY_VALUE,0,winreg.REG_SZ,Path(strategy).stem)
+        _service_run(['sc.exe','start',ZAPRET_SERVICE])
+    except Exception:
+        cli_run(['sc.exe','delete',ZAPRET_SERVICE],10)
+        raise
+    return Path(strategy).name
+
+
+def remove_zapret_service():
+    """Remove only a Zapret service that carries NetPilot's ownership marker."""
+    if os.name!='nt':raise RuntimeError('Служба Zapret доступна только в Windows.')
+    if service_state(ZAPRET_SERVICE)=='not_installed':return False
+    if not zapret_service_owned():
+        raise RuntimeError('Эта служба Zapret создана не NetPilot и не будет удалена.')
+    _service_run(['sc.exe','stop',ZAPRET_SERVICE],allow=(0,1062))
+    _service_run(['sc.exe','delete',ZAPRET_SERVICE])
+    _wait_service_absent()
+    return True
 
 
 def zapret_options(folder):

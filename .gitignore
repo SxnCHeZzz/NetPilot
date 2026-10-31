@@ -22,6 +22,7 @@ settings-v*.json
 benchmark-last.json
 telegram-worker-error.log
 components/
+/zapret/
 *.log
 *.tmp
 *.bak

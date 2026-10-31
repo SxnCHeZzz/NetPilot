@@ -36,6 +36,7 @@ class UserSettingsTests(unittest.TestCase):
 
     def test_default_is_opt_in_to_component_auto_upgrades(self):
         self.assertFalse(managed.DEFAULT['auto_upgrade'])
+        self.assertTrue(managed.DEFAULT['auto_strategy'])
 
     def test_no_unsafe_windows_archive_paths(self):
         import io, zipfile

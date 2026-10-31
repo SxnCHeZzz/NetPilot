@@ -7,6 +7,16 @@ import benchmark as b
 from catalog import Catalog
 
 class CurlTests(unittest.TestCase):
+    def test_quick_health_is_bounded_and_non_invasive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);(root/'utils').mkdir();(root/'lists').mkdir()
+            (root/'utils'/'targets.txt').write_text('Site = "https://one.example/"',encoding='utf-8')
+            (root/'lists'/'list-general.txt').write_text('two.example\nthree.example\n',encoding='utf-8')
+            with patch.object(b,'curl_probe',return_value={'host':'x','ok':True,'ms':12}):
+                result=b.quick_health(root,limit=2)
+        self.assertEqual(result['total'],2)
+        self.assertEqual(result['passed'],2)
+
     def test_parse_upstream_targets(self):
         with tempfile.TemporaryDirectory() as td:
             root=Path(td); (root/'utils').mkdir()

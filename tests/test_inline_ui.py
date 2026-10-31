@@ -35,6 +35,7 @@ class InlineModalTests(unittest.TestCase):
     def tearDown(self):
         self.window.status_timer.stop()
         self.window.daily_timer.stop()
+        self.window.auto_strategy_timer.stop()
         self.window.tray.hide()
         self.window.hide()
         self.window.pool.shutdown(wait=False,cancel_futures=True)
@@ -61,10 +62,12 @@ class InlineModalTests(unittest.TestCase):
 
     def test_settings_have_only_top_navigation(self):
         self.window.toggle_page()
-        self.assertEqual(self.window.settings_btn.kind,'back')
+        self.assertTrue(self.window.back_btn.isVisible())
+        self.assertFalse(self.window.settings_btn.isVisible())
         self.assertFalse(any(b.text().strip()=='←  Вернуться' for b in self.window.findChildren(ui.QPushButton)))
-        self.window.toggle_page()
-        self.assertEqual(self.window.settings_btn.kind,'settings')
+        self.window.back_btn.click()
+        self.assertFalse(self.window.back_btn.isVisible())
+        self.assertTrue(self.window.settings_btn.isVisible())
 
     def test_setup_is_inline(self):
         setup=ui.SetupDialog(self.window,self.window.cfg)

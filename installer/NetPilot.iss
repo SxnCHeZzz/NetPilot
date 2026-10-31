@@ -1,5 +1,5 @@
 #define MyAppName "NetPilot"
-#define MyAppVersion "0.5.4-rc5"
+#define MyAppVersion "0.5.4-rc6"
 #define MyAppExe "NetPilot.exe"
 
 [Setup]
@@ -12,7 +12,7 @@ DefaultGroupName=NetPilot
 UninstallDisplayIcon={app}\{#MyAppExe}
 SetupIconFile=..\assets\netpilot.ico
 OutputDir=..\dist\installer
-OutputBaseFilename=NetPilotSetup
+OutputBaseFilename=NetPilot-0.5.4-rc6-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

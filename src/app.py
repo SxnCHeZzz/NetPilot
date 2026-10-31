@@ -30,7 +30,7 @@ if '--tg-headless' in sys.argv:
     sys.exit(0)
 
 from PySide6.QtCore import Qt, QObject, Signal, QTimer, QPointF, QEventLoop, QEvent
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QBrush, QCursor, QPolygonF, QPainterPath, QDesktopServices
+from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QBrush, QCursor, QPolygonF, QPainterPath, QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QFrame, QHBoxLayout,
     QVBoxLayout, QLabel, QPushButton, QProgressBar, QScrollArea, QComboBox,
@@ -43,47 +43,66 @@ from catalog import load_catalog
 import telegram_headless as tg
 from tray_position import Rect, find_overflow_rect, physical_to_qt, centered
 
-VERSION = '0.5.4-rc5'
-PINK = '#FF4DA6'
+VERSION = '0.5.4-rc6'
+ACCENT = '#66E3A4'
+ACCENT_BRIGHT = '#8AF0BC'
+WARNING = '#F2BD62'
+ERROR = '#FF7285'
 CSS = '''
-*{font-family:'Segoe UI';font-size:12px;color:#F4F2F8}
+*{font-family:'Segoe UI';font-size:12px;color:#F2F6F4}
 QMainWindow{background:transparent}
-QDialog{background:#0D0E12}
-QWidget#root{background:#0D0E12;border:1px solid #28212F;border-radius:17px}
-QFrame#surface{background:#191A22;border:1px solid #2A2A34;border-radius:17px}
-QFrame#row{background:#20212B;border:1px solid #30313E;border-radius:12px}
-QFrame#row:hover{border-color:#494354;background:#262530}
+QDialog{background:#0A0D0F}
+QWidget#root{background:#0A0D0F;border:1px solid #263039;border-radius:17px}
+QFrame#surface{background:#13181C;border:1px solid #263039;border-radius:16px}
+QFrame#row{background:#171C21;border:1px solid #29323A;border-radius:12px}
+QFrame#row:hover{border-color:#3D4B52;background:#1B2227}
+QFrame#detailPanel{background:#11161A;border:1px solid #29343B;border-radius:14px}
+QFrame#separator{background:#2A343A;min-width:1px;max-width:1px}
 QLabel#brand{font-size:19px;font-weight:800;letter-spacing:0.3px}
 QLabel#heading{font-size:15px;font-weight:750}
-QLabel#muted{font-size:11px;color:#9896A7}
-QLabel#small{font-size:10px;color:#A9A2B3}
-QLabel#eyebrow{font-size:10px;color:#E5A5CA;font-weight:750}
-QLabel#status{color:#DFBED1;font-size:11px}
-QLabel#error{color:#FF829B;font-size:11px}
-QPushButton{border:1px solid #363342;background:#2B2935;border-radius:10px;padding:9px 13px;font-weight:600}
-QPushButton:hover{background:#383341;border-color:#79546C}
-QPushButton:pressed{background:#494052}
-QPushButton:disabled{color:#777482;background:#23212A;border-color:#282632}
-QPushButton#primary{background:#E63E95;border:1px solid #F45BAA;color:white;font-weight:750}
-QPushButton#primary:hover{background:#FF54A6}
-QPushButton#icon{background:#25232E;border:1px solid #302D3A;min-width:27px;min-height:26px;padding:5px;font-size:18px;font-weight:800}
-QFrame#dialogCard{background:#1B1A24;border:1px solid #524254;border-radius:17px}
+QLabel#heroTitle{font-size:24px;font-weight:750}
+QLabel#heroSubtitle{font-size:13px;color:#8F9A96}
+QLabel#componentName{font-size:14px;font-weight:700}
+QLabel#detailName{font-size:17px;font-weight:750}
+QLabel#factValue{font-size:12px;color:#F2F6F4;font-weight:650}
+QLabel#muted{font-size:11px;color:#8F9A96}
+QLabel#small{font-size:10px;color:#9EAAA5}
+QLabel#eyebrow{font-size:10px;color:#75CFA4;font-weight:750}
+QLabel#status{color:#A9B6B0;font-size:11px}
+QLabel#success{color:#8AF0BC;font-size:10px;font-weight:700;background:#122D22;border:1px solid #28543F;border-radius:7px;padding:3px 7px}
+QLabel#warn{color:#F2C97F;font-size:10px;font-weight:700;background:#302719;border:1px solid #554429;border-radius:7px;padding:3px 7px}
+QLabel#error{color:#FF8795;font-size:11px}
+QPushButton{border:1px solid #303A42;background:#20272C;border-radius:10px;padding:9px 13px;font-weight:600}
+QPushButton:hover{background:#283138;border-color:#4D625A}
+QPushButton:pressed{background:#313D42}
+QPushButton:disabled{color:#69736F;background:#171C20;border-color:#242C31}
+QPushButton#primary{background:#66E3A4;border:1px solid #8AF0BC;color:#07110C;font-weight:750}
+QPushButton#primary:hover{background:#7CEAB2}
+QPushButton#link{background:transparent;border:none;color:#66E3A4;font-size:12px;font-weight:700;padding:3px 1px;text-align:left}
+QPushButton#link:hover{color:#8AF0BC}
+QPushButton#details{background:transparent;border:none;color:#66E3A4;font-size:15px;font-weight:700;padding:8px}
+QPushButton#details:hover{color:#8AF0BC}
+QPushButton#componentTab{background:transparent;border:none;border-bottom:2px solid transparent;border-radius:0;padding:7px 4px;color:#8F9A96;font-size:11px;font-weight:650}
+QPushButton#componentTab:checked{color:#F2F6F4;border-bottom:2px solid #66E3A4}
+QPushButton#componentTab:hover{color:#DCE5E1;background:transparent}
+QPushButton#icon{background:#1D2429;border:1px solid #2D373E;min-width:27px;min-height:26px;padding:5px;font-size:18px;font-weight:800}
+QFrame#dialogCard{background:#151B1F;border:1px solid #385047;border-radius:17px}
 QLabel#dialogTitle{font-size:15px;font-weight:750}
-QPushButton#dialogSecondary{background:#2C2935;border:1px solid #433B4A}
-QPushButton#dialogSecondary:hover{background:#383343}
+QPushButton#dialogSecondary{background:#20272C;border:1px solid #354139}
+QPushButton#dialogSecondary:hover{background:#29342F}
 QWidget#dialogShade{background:rgba(5,5,9,188);border-radius:17px}
-QPushButton#quiet{background:transparent;border:1px solid #292630;color:#BFB9C9}
-QPushButton#quiet:hover{background:#282530}
-QPushButton#danger{color:#FFADC6;border:1px solid #503346}
-QProgressBar{background:#35313D;border:none;border-radius:4px;min-height:7px;max-height:7px}
-QProgressBar::chunk{background:#F34DA3;border-radius:4px}
-QComboBox,QLineEdit{background:#25232F;border:1px solid #403A4B;border-radius:8px;padding:7px;min-height:21px}
-QComboBox QAbstractItemView{background:#221D2A;selection-background-color:#AE397A;outline:none}
-QScrollArea{border:none;background:transparent}
+QPushButton#quiet{background:transparent;border:1px solid #293239;color:#B3BDB9}
+QPushButton#quiet:hover{background:#1B2226}
+QPushButton#danger{color:#FF9AA6;border:1px solid #54323B}
+QProgressBar{background:#293238;border:none;border-radius:4px;min-height:7px;max-height:7px}
+QProgressBar::chunk{background:#66E3A4;border-radius:4px}
+QComboBox,QLineEdit{background:#1C2328;border:1px solid #344149;border-radius:8px;padding:7px;min-height:21px}
+QComboBox QAbstractItemView{background:#151B1F;selection-background-color:#286348;outline:none}
+QScrollArea,QScrollArea>QWidget>QWidget{border:none;background:transparent}
 QScrollBar:vertical{background:transparent;width:6px;margin:3px}
-QScrollBar::handle:vertical{background:#504056;border-radius:3px;min-height:30px}
+QScrollBar::handle:vertical{background:#3D4A50;border-radius:3px;min-height:30px}
 QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0}
-QToolTip{background:#272331;color:white;border:1px solid #564557;padding:6px}
+QToolTip{background:#1C2328;color:white;border:1px solid #3B4A45;padding:6px}
 '''
 
 
@@ -227,11 +246,11 @@ class HeaderAction(QPushButton):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(QPen(QColor('#786079') if self.underMouse() else QColor('#39313E'), 1))
-        p.setBrush(QColor('#393040') if self.underMouse() else QColor('#25232E'))
+        p.setPen(QPen(QColor('#557064') if self.underMouse() else QColor('#303A40'), 1))
+        p.setBrush(QColor('#24312C') if self.underMouse() else QColor('#1C2328'))
         p.drawRoundedRect(1, 1, self.width()-2, self.height()-2, 11, 11)
         p.setBrush(Qt.BrushStyle.NoBrush)
-        pen = QPen(QColor('#FF7ABD') if self.underMouse() else QColor('#F3F0F8'), 2.3)
+        pen = QPen(QColor(ACCENT_BRIGHT) if self.underMouse() else QColor('#F2F6F4'), 2.3)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         p.setPen(pen)
@@ -264,7 +283,7 @@ class ServiceGlyph(QWidget):
     def paintEvent(self,event):
         p=QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(QPen(QColor(PINK),1.7))
+        p.setPen(QPen(QColor(ACCENT),1.7))
         if self.kind=='telegram':
             points=QPolygonF([QPointF(3,12),QPointF(22,3),QPointF(17,21),QPointF(12,15),QPointF(9,19),QPointF(9,14)])
             p.setBrush(Qt.BrushStyle.NoBrush)
@@ -287,19 +306,99 @@ class ServiceGlyph(QWidget):
         p.end()
 
 
-def app_icon():
-    path = m.DOMAINS_FILE.parent / 'netpilot.ico'
-    if path.exists():
-        return QIcon(str(path))
-    from PySide6.QtGui import QPixmap
+class StatusDot(QWidget):
+    """Small semantic state marker shared by overview and detail views."""
+    def __init__(self, active=False, parent=None):
+        super().__init__(parent)
+        self.active = active
+        self.setFixedSize(12, 12)
+
+    def set_active(self, active):
+        self.active = bool(active)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(ACCENT if self.active else '#56615D'))
+        painter.drawEllipse(2, 2, 8, 8)
+        painter.end()
+
+
+class StatusOrb(QWidget):
+    """Large, quiet health signal from the approved overview design."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.active_count = 0
+        self.busy = False
+        self.error = False
+        self.setFixedSize(64, 64)
+
+    def set_state(self, active_count, busy=False, error=False):
+        self.active_count = int(active_count)
+        self.busy = bool(busy)
+        self.error = bool(error)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        color = QColor(ERROR if self.error else WARNING if self.busy else ACCENT if self.active_count else '#65716C')
+        painter.setPen(QPen(color, 2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(5, 5, 54, 54)
+        glow = QColor(color); glow.setAlpha(42)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(glow)
+        painter.drawEllipse(14, 14, 36, 36)
+        painter.setBrush(color)
+        painter.drawEllipse(20, 20, 24, 24)
+        painter.end()
+
+
+class SummaryItem(QWidget):
+    def __init__(self, name, parent=None):
+        super().__init__(parent)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(7)
+        self.dot = StatusDot(False)
+        row.addWidget(self.dot, 0, Qt.AlignmentFlag.AlignTop)
+        text = QVBoxLayout(); text.setSpacing(1); row.addLayout(text)
+        label = QLabel(name); label.setObjectName('componentName'); text.addWidget(label)
+        self.status = QLabel('Готов'); self.status.setObjectName('muted'); text.addWidget(self.status)
+
+    def set_state(self, active, label):
+        self.dot.set_active(active)
+        self.status.setText(label)
+
+
+def status_icon(active_count=0, busy=False, error=False):
+    """Render a tray-safe NetPilot mark whose color mirrors live state."""
     pm = QPixmap(64, 64)
     pm.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pm); p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setPen(QPen(QColor(PINK), 5)); p.drawRoundedRect(9, 9, 46, 46, 13, 13)
-    p.setPen(QPen(QColor('#FFFFFF'), 5)); p.drawLine(36, 13, 25, 33)
-    p.drawLine(25, 33, 38, 33); p.drawLine(38, 33, 28, 51)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    state = ERROR if error else WARNING if busy else ACCENT if active_count else '#73807B'
+    p.setPen(QPen(QColor(state), 5))
+    p.setBrush(QColor('#11171A'))
+    p.drawRoundedRect(8, 8, 48, 48, 15, 15)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.setPen(QPen(QColor('#F5F8F6'), 5))
+    p.drawLine(36, 13, 25, 33)
+    p.drawLine(25, 33, 38, 33)
+    p.drawLine(38, 33, 29, 49)
+    p.setPen(Qt.PenStyle.NoPen)
+    for index in range(3):
+        p.setBrush(QColor(ACCENT if index < max(0, min(3, active_count)) else '#3B4642'))
+        p.drawEllipse(17 + index * 13, 54, 6, 6)
     p.end()
     return QIcon(pm)
+
+
+def app_icon():
+    return status_icon()
 
 
 class Toggle(QPushButton):
@@ -316,9 +415,9 @@ class Toggle(QPushButton):
     def paintEvent(self, event):
         p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(PINK if self.isChecked() else '#47434F'))
+        p.setBrush(QColor(ACCENT if self.isChecked() else '#3E4845'))
         p.drawRoundedRect(1, 1, 45, 24, 12, 12)
-        p.setBrush(QColor('#FFFFFF' if self.isEnabled() else '#B0AEB5'))
+        p.setBrush(QColor('#F7FAF8' if self.isEnabled() else '#A0AAA6'))
         p.drawEllipse(25 if self.isChecked() else 4, 4, 19, 19)
         p.end()
 
@@ -333,10 +432,10 @@ class SetupDialog(QFrame):
     def __init__(self, parent, cfg):
         super().__init__(parent)
         self.setWindowTitle('NetPilot · Подготовка')
-        self.setFixedWidth(340)
-        box = QVBoxLayout(self); box.setContentsMargins(22, 22, 22, 22); box.setSpacing(13)
+        self.setFixedWidth(278)
+        box = QVBoxLayout(self); box.setContentsMargins(14, 14, 14, 14); box.setSpacing(10)
         title = QLabel('Подготовим NetPilot'); title.setObjectName('brand'); box.addWidget(title)
-        text = QLabel('Подготовим Zapret и официальный Cloudflare WARP.\nTelegram Proxy уже встроен и не требует загрузки.')
+        text = QLabel('Загрузим Zapret и официальный Cloudflare WARP.\nTelegram Proxy уже готов к работе.')
         text.setObjectName('muted'); text.setWordWrap(True); box.addWidget(text)
         choose = QHBoxLayout(); box.addLayout(choose)
         self.path = QLineEdit(cfg['components_dir']); choose.addWidget(self.path, 1)
@@ -369,12 +468,12 @@ class ExpertDialog(QFrame):
     def __init__(self, owner):
         super().__init__(owner)
         self.owner = owner
-        self.setFixedSize(342, 400)
-        outer = QVBoxLayout(self)
-        title = QLabel('Расширенные параметры Zapret'); title.setObjectName('heading'); outer.addWidget(title)
+        self.setFixedSize(278, 354)
+        outer = QVBoxLayout(self); outer.setContentsMargins(10, 10, 10, 10)
+        title = QLabel('Расширенные параметры Zapret'); title.setObjectName('heading'); title.setWordWrap(True); outer.addWidget(title)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); outer.addWidget(scroll, 1)
         content = QWidget(); scroll.setWidget(content)
-        layout = QVBoxLayout(content); layout.setSpacing(12)
+        layout = QVBoxLayout(content); layout.setContentsMargins(2, 2, 4, 2); layout.setSpacing(8)
         folder = m.sub_dir(owner.cfg, 'zapret')
         try: options = m.zapret_options(folder)
         except Exception: options = {'game':'disabled','ipset':'unknown','update':False}
@@ -391,11 +490,11 @@ class ExpertDialog(QFrame):
         self.ipset.setCurrentIndex(max(0, self.ipset.findData(options['ipset']))); layout.addWidget(self.ipset)
         btn = QPushButton('Применить IPSet'); btn.clicked.connect(self.apply_ipset); layout.addWidget(btn)
         for title, callback in [
-            ('Подключить дополнительный профиль доменов', self.add_domains),
-            ('Посмотреть проверяемые домены', self.show_domains),
+            ('Подключить профиль доменов', self.add_domains),
+            ('Проверяемые домены', self.show_domains),
             ('Обновить IPSet', self.update_ipset),
             ('Диагностика служб', self.diagnostics),
-            ('Оригинальный Service Manager…', self.upstream),
+            ('Service Manager Flowseal…', self.upstream),
         ]:
             btn = QPushButton(title); btn.clicked.connect(callback); layout.addWidget(btn)
         hint = QLabel('Изменения настроек Flowseal требуют повторного запуска стратегии.\nПолные upstream-тесты, замена fake-файлов и установка службы доступны в оригинальном service.bat.')
@@ -481,8 +580,10 @@ class NetPilot(QMainWindow):
         self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='NetPilotWorker')
         self.running = set(); self.test_running = False; self.cancel = threading.Event()
         self.managed_pids = []; self.telegram_proc = None; self.warp_connected = False
+        self._component_states = {}
         self._overflow_rect = None
         self.warp_pending = False; self.latest = {}; self.latest_test = None
+        self._health_failures = 0; self.latest_auto_health = None; self._automatic_test = False
         self.suppress_toggle = False
         self.setWindowTitle('NetPilot'); self.setWindowIcon(app_icon())
         # Small frameless flyout like Volty. The shell notification overflow is
@@ -490,32 +591,45 @@ class NetPilot(QMainWindow):
         self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint |
                             Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setFixedWidth(414); self.resize(414, 540)
+        # 324x414 keeps the same readable proportions at about 40% less area.
+        self.setFixedSize(324, 414)
         self._build()
-        self.tray = QSystemTrayIcon(app_icon(), self)
+        self._tray_error_until = 0.0
+        self._tray_active_count = 0
+        self.tray = QSystemTrayIcon(status_icon(), self)
         menu = QMenu(self)
         action = QAction('Открыть NetPilot', self); action.triggered.connect(self.show_panel); menu.addAction(action)
+        self.tray_summary = QAction('Нет активных подключений', self)
+        self.tray_summary.setEnabled(False); menu.addAction(self.tray_summary)
         menu.addSeparator()
+        self.tray_actions = {}
         for title, callback in [('Zapret', self.toggle_zapret), ('Telegram Proxy', self.toggle_telegram), ('WARP', self.toggle_warp)]:
-            a = QAction('Переключить ' + title, self); a.triggered.connect(callback); menu.addAction(a)
+            a = QAction(title, self); a.setCheckable(True); a.triggered.connect(callback); menu.addAction(a)
+            self.tray_actions[title.lower().replace(' proxy','')] = a
         a = QAction('Подобрать стратегию', self); a.triggered.connect(self.start_test); menu.addAction(a)
         menu.addSeparator()
         a = QAction('Выйти', self); a.triggered.connect(self.quit); menu.addAction(a)
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self.tray_clicked)
+        self.tray.setToolTip('NetPilot · ожидание')
         self.tray.show()
         self.status_timer = QTimer(self); self.status_timer.timeout.connect(self.refresh)
         self.status_timer.start(15000)
         self.daily_timer=QTimer(self);self.daily_timer.timeout.connect(lambda:self.check_updates(False))
         self.daily_timer.start(6*60*60*1000)
+        self.auto_strategy_timer=QTimer(self);self.auto_strategy_timer.timeout.connect(self.auto_strategy_check)
+        self.auto_strategy_timer.start(15*60*1000)
         self.refresh()
         QTimer.singleShot(500, self.on_first_run)
-        if self.cfg.get('auto_check',True): QTimer.singleShot(1500, lambda:self.check_updates(False))
+        if self.cfg.get('auto_check',True): QTimer.singleShot(1500, self.check_updates)
+        if self.cfg.get('auto_strategy',True): QTimer.singleShot(12000, self.auto_strategy_check)
 
     def _build(self):
         root = QWidget(objectName='root'); self.setCentralWidget(root)
-        box = QVBoxLayout(root); box.setContentsMargins(18, 16, 18, 13); box.setSpacing(11)
+        box = QVBoxLayout(root); box.setContentsMargins(14, 12, 14, 10); box.setSpacing(8)
         header = QHBoxLayout(); box.addLayout(header)
+        self.back_btn = HeaderAction('back'); self.back_btn.clicked.connect(lambda:self.show_page(0))
+        self.back_btn.setVisible(False); header.addWidget(self.back_btn)
         title = QLabel('◆  NetPilot'); title.setObjectName('brand'); header.addWidget(title)
         header.addStretch()
         self.settings_btn = HeaderAction('settings')
@@ -523,76 +637,150 @@ class NetPilot(QMainWindow):
         hide = HeaderAction('minimize')
         hide.clicked.connect(self.hide); header.addWidget(hide)
         self.pages = QStackedWidget(); box.addWidget(self.pages, 1)
-        self._home(); self._settings()
+        self._overview(); self._details(); self._settings()
         self.message = QLabel('Готов к работе'); self.message.setObjectName('muted')
-        self.message.setWordWrap(True); self.message.setMinimumHeight(22); box.addWidget(self.message)
+        self.message.setWordWrap(True); self.message.setMaximumHeight(34); self.message.setVisible(False); box.addWidget(self.message)
+        self.message_timer=QTimer(self);self.message_timer.setSingleShot(True)
+        self.message_timer.timeout.connect(self._hide_message)
 
-    def _home(self):
+    def _bottom_row(self, parent):
+        footer=QWidget();bottom=QHBoxLayout(footer);bottom.setContentsMargins(0,0,0,0);parent.addWidget(footer)
+        button=QPushButton('↓  Компоненты');button.setObjectName('quiet');button.clicked.connect(self.install_dialog);bottom.addWidget(button)
+        bottom.addStretch()
+        about=QLabel('v'+VERSION.upper().replace('-RC',' RC'));about.setObjectName('small');bottom.addWidget(about)
+        return button,footer
+
+    def _overview(self):
         page = QWidget(); self.pages.addWidget(page)
-        content = QVBoxLayout(page); content.setContentsMargins(0, 8, 0, 0); content.setSpacing(10)
-        strap = QHBoxLayout(); content.addLayout(strap)
-        intro = QLabel('Подключения'); intro.setObjectName('heading'); strap.addWidget(intro)
-        strap.addStretch()
-        self.connection_note = QLabel('● Готово'); self.connection_note.setObjectName('status'); strap.addWidget(self.connection_note)
-        self.controls = {}
-        for name, subtitle, icon, handler in [
-            ('zapret', 'Discord и YouTube', 'zapret', self.toggle_zapret),
-            ('telegram', 'Telegram Proxy', 'telegram', self.toggle_telegram),
-            ('warp', 'Cloudflare WARP', 'warp', self.toggle_warp),
-        ]:
-            card = QFrame(objectName='row'); content.addWidget(card)
-            line = QHBoxLayout(card); line.setContentsMargins(12,12,12,12); line.setSpacing(10)
-            glyph = ServiceGlyph(icon); line.addWidget(glyph)
-            block = QVBoxLayout(); block.setSpacing(3); line.addLayout(block, 1)
-            label = QLabel({'zapret':'Zapret','telegram':'Telegram','warp':'WARP'}[name]); label.setStyleSheet('font-weight:700;font-size:13px'); block.addWidget(label)
-            detail = QLabel(subtitle); detail.setObjectName('muted'); block.addWidget(detail)
-            switch = Toggle(); switch.setToolTip('Включить / выключить'); switch.clicked.connect(handler); line.addWidget(switch)
-            self.controls[name]=(switch, detail)
-        section = QFrame(objectName='surface'); content.addWidget(section)
-        wrap=QVBoxLayout(section);wrap.setContentsMargins(13, 12, 13, 14);wrap.setSpacing(9)
-        line=QHBoxLayout();wrap.addLayout(line)
-        label=QLabel('Умный подбор'); label.setStyleSheet('font-weight:700;font-size:13px'); line.addWidget(label)
-        line.addStretch()
-        self.strategy_name=QLabel('Не выполнялся'); self.strategy_name.setObjectName('muted'); line.addWidget(self.strategy_name)
-        self.test_button=QPushButton('Подобрать стратегию'); self.test_button.setObjectName('primary')
-        self.test_button.clicked.connect(self.start_test); wrap.addWidget(self.test_button)
-        progress_row=QHBoxLayout();progress_row.setSpacing(9);wrap.addLayout(progress_row)
+        content = QVBoxLayout(page); content.setContentsMargins(0, 6, 0, 0); content.setSpacing(5)
+        content.addStretch(1)
+        self.status_orb = StatusOrb(); content.addWidget(self.status_orb, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.home_title = QLabel('Соединение в порядке'); self.home_title.setObjectName('heroTitle')
+        self.home_title.setAlignment(Qt.AlignmentFlag.AlignCenter); content.addWidget(self.home_title)
+        self.home_subtitle = QLabel('NetPilot следит за сетью автоматически'); self.home_subtitle.setObjectName('heroSubtitle')
+        self.home_subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter); content.addWidget(self.home_subtitle)
+        content.addSpacing(5)
+        services=QHBoxLayout();services.setSpacing(10);content.addLayout(services)
+        self.home_summaries={}
+        for index,(key,title) in enumerate((('zapret','Zapret'),('telegram','Telegram'),('warp','WARP'))):
+            item=SummaryItem(title);self.home_summaries[key]=item;services.addWidget(item,1)
+            if index<2:
+                divider=QFrame(objectName='separator');divider.setFixedHeight(42);services.addWidget(divider)
+        self.details_button=QPushButton('Подробности  ›');self.details_button.setObjectName('details')
+        self.details_button.clicked.connect(self.open_details);content.addWidget(self.details_button,0,Qt.AlignmentFlag.AlignHCenter)
+        content.addStretch(2)
+        self.install_button,self.overview_footer=self._bottom_row(content)
+
+    def _fact_row(self, parent, title, value):
+        row=QHBoxLayout();row.setSpacing(8);parent.addLayout(row)
+        label=QLabel(title);label.setObjectName('muted');row.addWidget(label,1)
+        result=QLabel(value);result.setObjectName('factValue');result.setAlignment(Qt.AlignmentFlag.AlignRight);row.addWidget(result)
+        return result
+
+    def _details(self):
+        page=QWidget();self.pages.addWidget(page)
+        content=QVBoxLayout(page);content.setContentsMargins(0,7,0,0);content.setSpacing(8)
+        heading=QLabel('Подробности');heading.setObjectName('heading');content.addWidget(heading)
+        tabs=QHBoxLayout();tabs.setSpacing(4);content.addLayout(tabs)
+        self.detail_tabs={}
+        for index,(key,title) in enumerate((('zapret','Zapret'),('telegram','Telegram'),('warp','WARP'))):
+            button=QPushButton(title+'\nГотов');button.setObjectName('componentTab');button.setCheckable(True)
+            button.clicked.connect(lambda checked=False,i=index:self.select_detail(i));tabs.addWidget(button,1)
+            self.detail_tabs[key]=button
+            if index<2:
+                divider=QFrame(objectName='separator');divider.setFixedHeight(38);tabs.addWidget(divider)
+        self.detail_stack=QStackedWidget();self.detail_stack.setFixedHeight(204);content.addWidget(self.detail_stack)
+        self.controls={};self.detail_status_labels={};self.detail_facts={}
+        specs={
+            'zapret':(('Стратегия','Не выбрана'),('Результат','Нет проверки'),('Запуск сервиса','Выключен')),
+            'telegram':(('Прокси','127.0.0.1:1443'),('Подключение','Автоматически')),
+            'warp':(('Клиент','Cloudflare WARP'),('Подключение','Отключено')),
+        }
+        handlers={'telegram':self.toggle_telegram,'warp':self.toggle_warp}
+        for key,title in (('zapret','Zapret'),('telegram','Telegram'),('warp','WARP')):
+            panel=QFrame(objectName='detailPanel');self.detail_stack.addWidget(panel)
+            wrap=QVBoxLayout(panel);wrap.setContentsMargins(12,8,12,8);wrap.setSpacing(4)
+            head=QHBoxLayout();wrap.addLayout(head)
+            dot=StatusDot();head.addWidget(dot)
+            names=QVBoxLayout();names.setSpacing(0);head.addLayout(names,1)
+            name=QLabel(title);name.setObjectName('detailName');names.addWidget(name)
+            state=QLabel('Готов');state.setObjectName('muted');names.addWidget(state)
+            self.controls[key]=(None,state);self.detail_status_labels[key]=(dot,state)
+            facts={}
+            for fact,value in specs[key]:facts[fact]=self._fact_row(wrap,fact,value)
+            self.detail_facts[key]=facts
+            wrap.addStretch()
+            if key=='zapret':
+                service=QHBoxLayout();service.setSpacing(9);wrap.addLayout(service)
+                self.detail_service_toggle=Toggle(m.service_state('zapret')!='not_installed')
+                self.detail_service_toggle.toggled.connect(self.change_zapret_autostart);service.addWidget(self.detail_service_toggle)
+                label=QLabel('Запускать вместе с Windows');label.setWordWrap(True);service.addWidget(label,1)
+                action=QPushButton('Подобрать лучшую стратегию  ›');action.setObjectName('link');action.clicked.connect(self.start_test);wrap.addWidget(action)
+                self.test_button=action
+            elif key=='telegram':
+                control=QHBoxLayout();control.setSpacing(9);wrap.addLayout(control)
+                runtime=Toggle();runtime.clicked.connect(handlers[key]);control.addWidget(runtime)
+                control.addWidget(QLabel('Включить Telegram Proxy'),1);self.controls[key]=(runtime,state)
+            else:
+                control=QHBoxLayout();control.setSpacing(9);wrap.addLayout(control)
+                runtime=Toggle();runtime.clicked.connect(handlers[key]);control.addWidget(runtime)
+                control.addWidget(QLabel('Подключить WARP'),1);self.controls[key]=(runtime,state)
+        self.strategy_name=self.detail_facts['zapret']['Стратегия']
+        progress_row=QHBoxLayout();progress_row.setSpacing(9);content.addLayout(progress_row)
         self.test_progress=QProgressBar();self.test_progress.setRange(0,100);self.test_progress.setValue(0)
         self.test_progress.setTextVisible(False);self.test_progress.setVisible(False);progress_row.addWidget(self.test_progress,1)
         self.test_percent=QLabel('0%');self.test_percent.setObjectName('small');self.test_percent.setFixedWidth(32)
         self.test_percent.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.test_percent.setVisible(False);progress_row.addWidget(self.test_percent)
-        self.test_details=QLabel('');self.test_details.setObjectName('small');self.test_details.setWordWrap(True);wrap.addWidget(self.test_details)
+        self.test_details=QLabel('');self.test_details.setObjectName('small');self.test_details.setWordWrap(True)
+        self.test_details.setVisible(False);content.addWidget(self.test_details)
         content.addStretch()
-        bottom=QHBoxLayout();content.addLayout(bottom)
-        self.install_button=QPushButton('↓  Компоненты');self.install_button.setObjectName('quiet');self.install_button.clicked.connect(self.install_dialog);bottom.addWidget(self.install_button)
-        bottom.addStretch()
-        about=QLabel('v0.5.4 RC5');about.setObjectName('small');bottom.addWidget(about)
+        self.details_install_button,self.details_footer=self._bottom_row(content)
+        self.select_detail(0)
         self.load_last_test()
 
-    def _setting_row(self, parent, name, value, handler):
+    def _setting_row(self, parent, name, value, handler, subtitle=''):
         frame=QFrame(objectName='row'); parent.addWidget(frame)
-        line=QHBoxLayout(frame); line.setContentsMargins(11,9,10,9)
-        label=QLabel(name); line.addWidget(label,1)
+        line=QHBoxLayout(frame); line.setContentsMargins(12,10,10,10);line.setSpacing(10)
+        text=QVBoxLayout();text.setSpacing(2);line.addLayout(text,1)
+        label=QLabel(name);label.setStyleSheet('font-weight:650');text.addWidget(label)
+        if subtitle:
+            detail=QLabel(subtitle);detail.setObjectName('muted');detail.setWordWrap(True);text.addWidget(detail)
         toggle=Toggle(value);toggle.toggled.connect(handler); line.addWidget(toggle)
-        return toggle
+        return toggle,frame
 
     def _settings(self):
         page=QWidget();self.pages.addWidget(page)
         whole=QVBoxLayout(page);whole.setContentsMargins(0,8,0,0);whole.setSpacing(8)
         label=QLabel('Настройки');label.setObjectName('heading');whole.addWidget(label)
-        scroll=QScrollArea();scroll.setWidgetResizable(True);whole.addWidget(scroll,1)
-        content=QWidget();scroll.setWidget(content)
+        scroll=QScrollArea();scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff);whole.addWidget(scroll,1)
+        content=QWidget();content.setObjectName('settingsContent');scroll.setWidget(content)
         self.prefs=QVBoxLayout(content);self.prefs.setContentsMargins(0,4,5,4);self.prefs.setSpacing(8)
-        self._setting_row(self.prefs,'Запуск с Windows',self.autostart_enabled(),self.change_autostart)
-        self._setting_row(self.prefs,'Запускать свёрнутым',self.cfg.get('start_hidden',False),lambda v:self.preference('start_hidden',v))
+        launch=QHBoxLayout();self.prefs.addLayout(launch)
+        divider=QLabel('ЗАПУСК И АВТОМАТИЗАЦИЯ');divider.setObjectName('eyebrow');launch.addWidget(divider)
+        launch.addStretch();self.service_badge=QLabel('');launch.addWidget(self.service_badge)
+        self.autostart_toggle,_=self._setting_row(
+            self.prefs,'NetPilot вместе с Windows',self.autostart_enabled(),self.change_autostart,
+            'Открывает приложение в трее после входа в систему')
+        service_present=m.service_state('zapret')!='not_installed'
+        self.zapret_service_toggle,self.zapret_service_row=self._setting_row(
+            self.prefs,'Zapret вместе с Windows',service_present,self.change_zapret_autostart,
+            'Системная служба · выбранная стратегия запускается до входа в аккаунт')
+        self.start_hidden_toggle,_=self._setting_row(
+            self.prefs,'Запускать свёрнутым',self.cfg.get('start_hidden',False),
+            lambda v:self.preference('start_hidden',v),'Не показывать окно при автоматическом запуске NetPilot')
+        self.auto_strategy_toggle,_=self._setting_row(
+            self.prefs,'Автоматически подбирать стратегию',self.cfg.get('auto_strategy',True),
+            self.change_auto_strategy,'Проверять активное соединение и менять стратегию после двух сбоев')
+        updates=QLabel('ОБНОВЛЕНИЯ');updates.setObjectName('eyebrow');self.prefs.addWidget(updates)
         self._setting_row(self.prefs,'Проверять обновления',self.cfg.get('auto_check',True),lambda v:self.preference('auto_check',v))
         self._setting_row(self.prefs,'Автоустановка обновлений',self.cfg.get('auto_upgrade',False),lambda v:self.preference('auto_upgrade',v))
         divider=QLabel('КОМПОНЕНТЫ И ОБСЛУЖИВАНИЕ');divider.setObjectName('eyebrow');self.prefs.addWidget(divider)
         for title, handler in [
             ('Установить компоненты',self.install_dialog),
             ('Проверить новые версии',lambda:self.check_updates(True)),
-            ('Откатить Zapret',lambda:self.rollback('zapret')),
+            ('Вернуть Zapret до обновления',lambda:self.rollback('zapret')),
                         ('Расширенные настройки Zapret',self.expert),
             ('Диагностика',self.diagnostics),
         ]:
@@ -600,14 +788,51 @@ class NetPilot(QMainWindow):
         label=QLabel('NetPilot — неофициальное приложение. Flowseal и Cloudflare — самостоятельные проекты.');label.setWordWrap(True)
         label.setObjectName('muted');self.prefs.addWidget(label)
         self.prefs.addStretch()
+        self.refresh_service_setting()
 
     def toggle_page(self):
-        self.pages.setCurrentIndex(1-self.pages.currentIndex())
-        self.settings_btn.set_kind('back' if self.pages.currentIndex() else 'settings')
+        self.show_page(2 if self.pages.currentIndex()==0 else 0)
+
+    def show_page(self, index):
+        self.pages.setCurrentIndex(index)
+        self.back_btn.setVisible(index!=0)
+        self.settings_btn.setVisible(index==0)
+        self._sync_page_footer()
+
+    def open_details(self):
+        self.show_page(1)
+
+    def select_detail(self, index):
+        if not hasattr(self,'detail_stack'):return
+        self.detail_stack.setCurrentIndex(index)
+        keys=list(self.detail_tabs)
+        for current,button in enumerate(self.detail_tabs.values()):
+            button.setChecked(current==index)
+            key=keys[current]
+            title={'zapret':'Zapret','telegram':'Telegram','warp':'WARP'}[key]
+            label=self._component_states.get(key,(False,'Готов'))[1]
+            button.setText(title+'\n'+('Выбран' if current==index else label))
 
     def note(self, message, error=False):
-        self.message.setText(message[:280]); self.message.setObjectName('error' if error else 'muted')
+        full=str(message)
+        self.message.setText(full[:180]);self.message.setToolTip(full)
+        self.message.setObjectName('error' if error else 'muted');self.message.setVisible(True)
         self.message.style().unpolish(self.message); self.message.style().polish(self.message)
+        self._sync_page_footer()
+        self.message_timer.start(8000 if error else 5000)
+        if error and hasattr(self, 'tray'):
+            self._tray_error_until = time.monotonic() + 8
+            self._update_tray()
+            QTimer.singleShot(8100, self._update_tray)
+
+    def _sync_page_footer(self):
+        visible=self.message.isHidden()
+        if hasattr(self,'overview_footer'):self.overview_footer.setVisible(visible)
+        if hasattr(self,'details_footer'):self.details_footer.setVisible(visible)
+
+    def _hide_message(self):
+        self.message.hide()
+        self._sync_page_footer()
 
     def inline_confirm(self, title, message):
         return InlineModal(self, title, message, question=True).exec()
@@ -623,6 +848,10 @@ class NetPilot(QMainWindow):
 
     def preference(self, key, value):
         self.cfg[key]=value; m.write_cfg(self.cfg)
+
+    def change_auto_strategy(self, value):
+        self.preference('auto_strategy',value)
+        if value:QTimer.singleShot(500,self.auto_strategy_check)
 
     def autostart_cmd(self):
         if getattr(sys,'frozen',False):return '"'+sys.executable+'" --tray'
@@ -652,6 +881,100 @@ class NetPilot(QMainWindow):
         except OSError as exc:
             QMessageBox.warning(self,'Автозапуск',str(exc))
             self.sender().setChecked(not value)
+
+    def refresh_service_setting(self):
+        if not hasattr(self,'zapret_service_toggle'):return
+        state=m.service_state('zapret');present=state!='not_installed';owned=m.zapret_service_owned()
+        self.zapret_service_toggle.blockSignals(True);self.zapret_service_toggle.setChecked(present)
+        self.zapret_service_toggle.blockSignals(False)
+        if hasattr(self,'detail_service_toggle'):
+            self.detail_service_toggle.blockSignals(True);self.detail_service_toggle.setChecked(present)
+            self.detail_service_toggle.blockSignals(False)
+            self.detail_service_toggle.setEnabled(not present or owned)
+        if hasattr(self,'detail_facts'):
+            self.detail_facts['zapret']['Запуск сервиса'].setText('Включён' if present else 'Выключен')
+        if present and owned:
+            strategy=m.zapret_service_strategy() or 'выбранная стратегия'
+            self.service_badge.setText('АВТО · '+strategy.replace('general','').strip(' ()') or 'GENERAL')
+            self.service_badge.setObjectName('success');self.zapret_service_toggle.setEnabled(True)
+            self.zapret_service_toggle.setToolTip('Служба создана NetPilot')
+        elif present:
+            self.service_badge.setText('СЛУЖБА FLOWSEAL');self.service_badge.setObjectName('warn')
+            self.zapret_service_toggle.setEnabled(False)
+            self.zapret_service_toggle.setToolTip('Служба создана вне NetPilot; управление доступно в оригинальном service.bat')
+        else:
+            self.service_badge.setText('ВЫКЛ');self.service_badge.setObjectName('muted')
+            self.zapret_service_toggle.setEnabled(True);self.zapret_service_toggle.setToolTip('Установить службу Zapret')
+        if 'service' in self.running:self.zapret_service_toggle.setEnabled(False)
+        self.service_badge.style().unpolish(self.service_badge);self.service_badge.style().polish(self.service_badge)
+
+    def change_zapret_autostart(self, value):
+        folder=m.sub_dir(self.cfg,'zapret')
+        if value and not folder.is_dir():
+            self.refresh_service_setting();self.install_dialog();return
+        if self.test_running or self.managed_pids:
+            self.note('Сначала остановите проверку и Zapret, запущенный из NetPilot.',True)
+            self.refresh_service_setting();return
+        if m.service_state('zapret')!='not_installed' and not m.zapret_service_owned():
+            QMessageBox.information(self,'Служба Flowseal','Служба уже создана оригинальным Flowseal. NetPilot не изменяет и не удаляет чужие службы.')
+            self.refresh_service_setting();return
+        strategy=self.cfg.get('strategy','general.bat')
+        choices=m.list_strategies(folder) if folder.is_dir() else []
+        if value and strategy not in choices:strategy=choices[0] if choices else ''
+        if value:
+            message=f'Установить системную службу для «{strategy}»? Zapret будет запускаться автоматически вместе с Windows.'
+            flag='--install-zapret-service'
+        else:
+            message='Удалить автозапуск Zapret? Будет удалена только служба, созданная NetPilot.'
+            flag='--remove-zapret-service'
+        if not self.confirm('Zapret вместе с Windows',message):
+            self.refresh_service_setting();return
+        if not b.is_admin():
+            self.elevate(flag);return
+        self.apply_zapret_service(value)
+
+    def apply_zapret_service(self, enabled):
+        folder=m.sub_dir(self.cfg,'zapret');strategy=self.cfg.get('strategy','general.bat')
+        choices=m.list_strategies(folder) if folder.is_dir() else []
+        if enabled and strategy not in choices:strategy=choices[0] if choices else strategy
+        self.zapret_service_toggle.setEnabled(False)
+        self.note('Настраиваем службу Zapret…')
+        self.job('service',lambda:m.install_zapret_service(folder,strategy) if enabled else m.remove_zapret_service())
+
+    def _update_tray(self):
+        """Keep the small Windows surface useful without opening the window."""
+        if not hasattr(self, 'tray'):
+            return
+        states = self._component_states
+        active_count = sum(bool(value[0]) for value in states.values())
+        busy = bool(self.running or self.test_running or self.warp_pending)
+        error = time.monotonic() < self._tray_error_until
+        signature = (active_count, busy, error)
+        if signature != getattr(self, '_tray_signature', None):
+            self.tray.setIcon(status_icon(active_count, busy, error))
+            self._tray_signature = signature
+        self._tray_active_count = active_count
+
+        if error:
+            summary = 'Требуется внимание'
+        elif busy:
+            summary = 'Выполняется операция…'
+        elif active_count:
+            summary = f'Активно {active_count} из 3'
+        else:
+            summary = 'Нет активных подключений'
+        self.tray_summary.setText(summary)
+
+        labels = {'zapret':'Zapret', 'telegram':'Telegram', 'warp':'WARP'}
+        details = []
+        for key, title in labels.items():
+            active, label = states.get(key, (False, 'Проверяется'))
+            action = self.tray_actions.get(key)
+            if action is not None:
+                action.setChecked(bool(active))
+                action.setText(f'{title} · {label}')
+            details.append(f'{title}: {label.lower()}')
+        self.tray.setToolTip('NetPilot · ' + summary + '\n' + ' · '.join(details))
 
     def tray_clicked(self, reason):
         if reason==QSystemTrayIcon.ActivationReason.Trigger:
@@ -752,6 +1075,8 @@ class NetPilot(QMainWindow):
     def job(self,key,fn):
         if key in self.running:return
         self.running.add(key)
+        if hasattr(self, 'tray'):
+            self._update_tray()
         def call():
             try:self.bus.done.emit(key,fn(),'')
             except Exception as e:self.bus.done.emit(key,None,str(e))
@@ -763,34 +1088,65 @@ class NetPilot(QMainWindow):
         self.test_progress.setValue(percent)
         self.test_percent.setText(f'{percent}%')
         self.test_details.setText(text)
+        self.test_progress.setToolTip(text)
+        if self.test_running:
+            self.test_button.setText(f'Остановить подбор · {percent}%')
+        self._update_tray()
 
     def completed(self,key,result,error):
         self.running.discard(key)
         if error:
-            if key=='test':self.test_running=False;self.cancel.clear();self.test_button.setText('Подобрать стратегию');self.test_button.setEnabled(True)
+            if key=='autohealth':
+                self.latest_auto_health={'error':error}
+                self._update_tray();return
+            if key=='warpstatus':
+                self.warp_connected=False
+                self.detail_facts['warp']['Подключение'].setText('Недоступно')
+                self._update_tray();return
+            if key=='test':self.test_running=False;self.cancel.clear();self.test_button.setText('Подобрать лучшую стратегию  ›');self.test_button.setEnabled(True);self._automatic_test=False
             if key=='warp':self.warp_pending=False
-            self.note(f'{key}: {error}',True)
+            self.note(('Служба Zapret: ' if key=='service' else f'{key}: ')+error,True)
             self.test_progress.setVisible(False)
             self.test_percent.setVisible(False)
+            if key=='service':self.refresh_service_setting()
+            self._update_tray()
             return
         if key=='test':
-            self.test_running=False;self.cancel.clear();self.test_button.setText('Подобрать стратегию');self.test_button.setEnabled(True)
+            was_automatic=self._automatic_test
+            self.test_running=False;self.cancel.clear();self.test_button.setText('Подобрать лучшую стратегию  ›');self.test_button.setEnabled(True);self._automatic_test=False
             self.latest_test=result
             best=result.get('best')
             self.managed_pids=result.get('active_pids',[])
             if best and best.get('passed',0)>0:
                 self.cfg['strategy']=best['strategy'];m.write_cfg(self.cfg)
                 self.strategy_name.setText(best['strategy'].replace('general','').replace('.bat','').strip(' ()') or 'general')
-                self.test_details.setText(f"{best['passed']}/{best['total']} HTTPS · "+('применена' if self.managed_pids else 'подобрана'))
-                self.note('Подбор завершён: '+best['strategy'])
+                self.detail_facts['zapret']['Результат'].setText(f"{best['passed']} из {best['total']} адресов")
+                self.note(('Автоподбор завершён: ' if was_automatic else 'Подбор завершён: ')+best['strategy'])
                 if self.tray.isVisible():self.tray.showMessage('NetPilot',('Применена: ' if self.managed_pids else 'Подобрана: ')+best['strategy'],QSystemTrayIcon.MessageIcon.Information,5000)
             else:
                 self.strategy_name.setText('Нет подтверждённых ответов')
+                self.detail_facts['zapret']['Результат'].setText('Нет ответа')
                 errors=[r.get('error') for r in result.get('results',[]) if r.get('error')]
-                self.test_details.setText((errors[0][:120] if errors else 'Проверьте curl.exe, DNS и настройки сети. Это не означает, что Zapret не работает.'))
-                self.note('Тест не смог подтвердить доступность. Проверьте диагностику.')
+                details=(errors[0][:120] if errors else 'Проверьте curl.exe, DNS и настройки сети.')
+                self.note('Подбор не подтвердил доступность. '+details,True)
             self.test_progress.setValue(100);self.test_percent.setText('100%')
             QTimer.singleShot(1600, self._hide_completed_progress)
+        elif key=='autohealth':
+            self.latest_auto_health=result
+            passed=int(result.get('passed',0));total=max(1,int(result.get('total',0)))
+            if passed/total >= .75:
+                self._health_failures=0
+            else:
+                self._health_failures+=1
+                if self._health_failures>=2:
+                    self._health_failures=0
+                    service=m.service_state('zapret')
+                    if service!='not_installed':
+                        self.note('Связь ухудшилась. Автоподбор не меняет работающую службу Zapret без UAC.',True)
+                    elif not b.is_admin():
+                        self.note('Связь ухудшилась. Для автоматической смены стратегии запустите NetPilot от администратора.',True)
+                    elif self.managed_pids:
+                        QTimer.singleShot(0,lambda:self.start_test(True))
         elif key=='activate':
             self.managed_pids=result
             self.note('Zapret запущен до выхода из NetPilot')
@@ -799,6 +1155,12 @@ class NetPilot(QMainWindow):
         elif key=='warpstatus':
             s=str(result).lower()
             self.warp_connected='connected' in s and 'disconnected' not in s
+            self.detail_facts['warp']['Подключение'].setText('Подключено' if self.warp_connected else 'Отключено')
+        elif key=='service':
+            if result is False:self.note('Служба Zapret уже отсутствует')
+            elif isinstance(result,str):self.note('Автозапуск Zapret включён · '+result)
+            else:self.note('Автозапуск Zapret выключен')
+            self.refresh_service_setting()
         elif key=='install':
             installed=result.get('installed',[]) if isinstance(result,dict) else result
             failures=result.get('failures',[]) if isinstance(result,dict) else []
@@ -851,14 +1213,35 @@ class NetPilot(QMainWindow):
         tele_running=bool(self.telegram_proc and self.telegram_proc.poll() is None)
         states={
             'zapret':(zap_running,'Работает' if zap_running else 'Готов' if z.is_dir() else 'Не установлен'),
-            'telegram':(tele_running,'Работает' if tele_running else 'Готов · встроен'),
+            'telegram':(tele_running,'Работает' if tele_running else 'Готов'),
             'warp':(self.warp_connected,'Подключён' if self.warp_connected else 'Готов' if m.warp_cli() else 'Не установлен'),
         }
+        self._component_states = states
         for name,(active,label) in states.items():
             switch,detail=self.controls[name]
-            switch.blockSignals(True);switch.setChecked(active);switch.blockSignals(False)
+            if switch is not None:
+                switch.blockSignals(True);switch.setChecked(active);switch.blockSignals(False)
             detail.setText(label)
-        self.connection_note.setText('● Активно '+str(sum(s[0] for s in states.values()))+'/3')
+            dot,status=self.detail_status_labels[name];dot.set_active(active);status.setText(label)
+            self.home_summaries[name].set_state(active,label)
+            tab_title={'zapret':'Zapret','telegram':'Telegram','warp':'WARP'}[name]
+            self.detail_tabs[name].setText(tab_title+'\n'+('Выбран' if self.detail_tabs[name].isChecked() else label))
+        active_count=sum(s[0] for s in states.values())
+        busy=bool(self.running or self.test_running or self.warp_pending)
+        error=time.monotonic()<getattr(self,'_tray_error_until',0)
+        self.status_orb.set_state(active_count,busy,error)
+        if error:
+            self.home_title.setText('Требуется внимание')
+            self.home_subtitle.setText('Откройте подробности и проверьте состояние')
+        elif busy:
+            self.home_title.setText('Проверяем соединение')
+            self.home_subtitle.setText('NetPilot выполняет операцию автоматически')
+        else:
+            self.home_title.setText('Соединение в порядке')
+            self.home_subtitle.setText('NetPilot следит за сетью автоматически')
+        self.detail_facts['warp']['Подключение'].setText('Подключено' if self.warp_connected else 'Отключено')
+        self._update_tray()
+        self.refresh_service_setting()
         if m.warp_cli() and not self.warp_pending and 'warpstatus' not in self.running:
             if not hasattr(self,'_last_warp') or time.monotonic()-self._last_warp>30:
                 self._last_warp=time.monotonic();self.job('warpstatus',lambda:m.warp_action('status'))
@@ -950,16 +1333,23 @@ class NetPilot(QMainWindow):
         self.warp_pending=True
         self.job('warp',lambda:m.warp_action(action));self.refresh()
 
-    def start_test(self):
+    def start_test(self, automatic=False):
+        automatic=bool(automatic)
         if self.test_running:
+            if automatic:return
             self.cancel.set();self.test_button.setEnabled(False);self.test_details.setText('Останавливаем проверку…');return
         if self.running:
-            self.note('Сначала дождитесь завершения другой операции.',True);return
+            if not automatic:self.note('Сначала дождитесь завершения другой операции.',True)
+            return
         folder=m.sub_dir(self.cfg,'zapret')
-        if not folder.is_dir():self.install_dialog();return
+        if not folder.is_dir():
+            if not automatic:self.install_dialog()
+            return
         if self.warp_connected:
-            QMessageBox.warning(self,'WARP','Перед сравнением стратегий отключите WARP, иначе оценка будет некорректной.');return
+            if not automatic:QMessageBox.warning(self,'WARP','Перед сравнением стратегий отключите WARP, иначе оценка будет некорректной.')
+            return
         if not b.is_admin():
+            if automatic:return
             if self.confirm('Тестирование','Для запуска WinDivert требуются права администратора. Перезапустить NetPilot с UAC?'):
                 self.elevate('--test')
             return
@@ -974,14 +1364,17 @@ class NetPilot(QMainWindow):
             external=[p.pid for p in psutil.process_iter(['name'])
                       if (p.info.get('name') or '').lower()=='winws.exe' and p.pid not in owned]
             if external:raise RuntimeError('Есть другой процесс winws.exe. NetPilot не будет его останавливать.')
-        except Exception as exc:QMessageBox.warning(self,'Тестирование',str(exc));return
-        checks=len(files)*len(catalog.hosts)
-        if not self.confirm('Подбор стратегии',f'{len(files)} стратегий, {len(catalog.hosts)} доменов, всего {checks} HTTPS-запросов. Проверка может длиться долго и временно влиять на сеть. Начать?'):
+        except Exception as exc:
+            if automatic:self.note('Автоподбор пропущен: '+str(exc),True)
+            else:QMessageBox.warning(self,'Тестирование',str(exc))
             return
-        self.cancel.clear();self.test_running=True
+        checks=len(files)*len(catalog.hosts)
+        if not automatic and not self.confirm('Подбор стратегии',f'{len(files)} стратегий, {len(catalog.hosts)} доменов, всего {checks} HTTPS-запросов. Проверка может длиться долго и временно влиять на сеть. Начать?'):
+            return
+        self.cancel.clear();self.test_running=True;self._automatic_test=automatic
         self.test_progress.setVisible(True);self.test_percent.setVisible(True);self.test_progress.setValue(0);self.test_percent.setText('0%')
-        self.test_button.setText('Остановить проверку');self.test_button.setEnabled(True)
-        self.test_details.setText('Запускаем тестирование…')
+        self.test_button.setText('Остановить подбор · 0%');self.test_button.setEnabled(True)
+        self.test_progress.setToolTip('Автоматически сравниваем стратегии…' if automatic else 'Сравниваем стратегии и выбираем лучшую…')
         # A successful benchmark always applies its chosen configuration.
         # Legacy 'auto_apply' settings must not silently disable this.
         apply=True
@@ -998,6 +1391,16 @@ class NetPilot(QMainWindow):
         if ok<=32:QMessageBox.warning(self,'Windows','Не удалось запросить права администратора.')
         else:self.quit()
 
+    def auto_strategy_check(self):
+        """Monitor an active Zapret connection without disturbing its process."""
+        if not self.cfg.get('auto_strategy',True) or self.test_running or self.running or self.warp_connected:
+            return
+        folder=m.sub_dir(self.cfg,'zapret')
+        if not folder.is_dir():return
+        service_running=m.service_state('zapret')=='RUNNING'
+        if not self.managed_pids and not service_running:return
+        self.job('autohealth',lambda:b.quick_health(folder))
+
     def check_updates(self, manual=False):
         if not manual and not self.cfg.get('auto_check',True):return
         if 'updates' in self.running or self.test_running:return
@@ -1006,8 +1409,13 @@ class NetPilot(QMainWindow):
     def rollback(self,kind):
         if self.test_running or self.managed_pids or (self.telegram_proc and self.telegram_proc.poll() is None):
             self.note('Сначала остановите компоненты.',True);return
-        if self.confirm('Откат обновления',f'Вернуть предыдущую версию {kind}?'):
-            try:m.rollback_component(self.cfg,kind);self.note('Предыдущая версия восстановлена')
+        component='Zapret' if kind=='zapret' else kind
+        message=(f'Вернуть {component} к версии, которая была установлена до последнего обновления?\n\n'
+                 'Текущая версия будет заменена резервной копией. Пользовательские списки из той копии также вернутся.')
+        if self.confirm('Вернуть предыдущую версию',message):
+            try:m.rollback_component(self.cfg,kind);self.note(f'{component}: предыдущая версия восстановлена')
+            except FileNotFoundError:
+                self.note(f'{component}: резервной версии нет. Она появится после первого обновления.',True)
             except Exception as e:self.note(str(e),True)
 
     def expert(self):
@@ -1023,7 +1431,7 @@ class NetPilot(QMainWindow):
             best=data.get('best')
             if best and best.get('passed',0)>0:
                 self.strategy_name.setText(best['strategy'].replace('general','').replace('.bat','').strip(' ()') or 'general')
-                self.test_details.setText(f"Предыдущая проверка: {best['passed']}/{best['total']} HTTPS")
+                self.detail_facts['zapret']['Результат'].setText(f"{best['passed']} из {best['total']} адресов")
         except (OSError, ValueError, TypeError, KeyError):pass
 
     def quit(self):
@@ -1036,6 +1444,8 @@ class NetPilot(QMainWindow):
             try: tg.stop(self.telegram_proc)
             except (OSError, subprocess.SubprocessError) as exc:
                 self.note('Telegram Proxy: ' + str(exc), True)
+        self.auto_strategy_timer.stop()
+        self.message_timer.stop()
         self.tray.hide()
         self.pool.shutdown(wait=False,cancel_futures=True)
         QApplication.instance().quit()
@@ -1049,6 +1459,8 @@ def main():
         window.show_panel()
     if '--test' in sys.argv:QTimer.singleShot(1100,window.start_test)
     if '--zapret' in sys.argv:QTimer.singleShot(900,window.toggle_zapret)
+    if '--install-zapret-service' in sys.argv:QTimer.singleShot(700,lambda:window.apply_zapret_service(True))
+    if '--remove-zapret-service' in sys.argv:QTimer.singleShot(700,lambda:window.apply_zapret_service(False))
     return app.exec()
 
 if __name__=='__main__': sys.exit(main())
