@@ -29,6 +29,14 @@ if '--tg-headless' in sys.argv:
         raise
     sys.exit(0)
 
+if '--privileged-request' in sys.argv:
+    from privileged import privileged_cli_main
+    try:
+        request_id = sys.argv[sys.argv.index('--privileged-request') + 1]
+    except IndexError:
+        raise SystemExit(2)
+    raise SystemExit(privileged_cli_main(request_id))
+
 from PySide6.QtCore import Qt, QObject, Signal, QTimer, QPointF, QEventLoop, QEvent
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QBrush, QCursor, QPolygonF, QPainterPath, QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
