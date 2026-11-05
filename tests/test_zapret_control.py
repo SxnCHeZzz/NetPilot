@@ -14,10 +14,11 @@ from zapret_control import StopMode, make_stop_plan
 COMMAND = r'"C:\NetPilot\zapret\bin\winws.exe" --wf-tcp=443'
 
 
-def process(pid=21, create_time=100.0, confidence='confirmed'):
+def process(pid=21, create_time=100.0, confidence='confirmed', cmdline=()):
     return ZapretItem('process', 'netpilot', confidence, True, ('netpilot-root',),
                       process=ProcessRecord(pid, 'winws.exe',
-                          r'C:\NetPilot\zapret\bin\winws.exe', create_time=create_time))
+                          r'C:\NetPilot\zapret\bin\winws.exe', cmdline=cmdline,
+                          create_time=create_time))
 
 
 def service(name='Custom Zapret', pid=11, active=True):
@@ -79,7 +80,8 @@ class TransferAdapter:
             if 'zapret' in self.configs:
                 raise RuntimeError('service already exists')
             self.configs['zapret'] = ServiceBackup('zapret', validated.image_path, 'automatic',
-                'stopped', 'zapret', 'NetPilot Zapret', {'account': 'LocalSystem', 'owned': True})
+                'stopped', 'zapret', 'NetPilot Zapret', {'account': 'LocalSystem', 'owned': True,
+                                                         'transaction_id': validated.transaction_id})
         self.mutate(('create', 'zapret'), create)
 
     def restore_service(self, backup):
@@ -358,6 +360,59 @@ class TransferTests(unittest.TestCase):
                 else:
                     self.assertNotEqual(adapter.configs.get('zapret'), original)
                 self.assertTrue((self.storage / 'zapret-transfer-v1.json').is_file())
+
+    def test_concurrent_creator_service_is_never_deleted_by_failed_creation_cleanup(self):
+        from zapret_control import ServiceBackup, transfer_to_netpilot
+        adapter = TransferAdapter()
+        def race(_validated):
+            adapter.configs['zapret'] = ServiceBackup(
+                'zapret', f'"{self.root / "bin" / "winws.exe"}" --wf-tcp=443 --dpi-desync=fake',
+                'automatic', 'stopped', 'zapret', 'Other transaction',
+                {'account': 'LocalSystem', 'owned': True, 'transaction_id': 'other-transaction'})
+            raise RuntimeError('service already exists')
+        adapter.create_netpilot_service = race
+
+        result = transfer_to_netpilot(self.request(adapter), adapter)
+
+        self.assertEqual(result.status, 'manual_recovery_required', result.errors)
+        self.assertIn('zapret', adapter.configs)
+        self.assertEqual(adapter.configs['zapret'].adapter_fields['transaction_id'], 'other-transaction')
+        self.assertFalse(any(call[0] == 'delete' for call in adapter.calls))
+
+    def test_matching_service_with_mismatched_running_process_never_reports_success(self):
+        from zapret_control import transfer_to_netpilot
+        adapter = TransferAdapter([self.config(owned=True, state='running')])
+        snapshot = adapter.snapshot
+        def with_observed_process():
+            current = snapshot()
+            service_item = next(item for item in current.items if item.service)
+            if not service_item.active or not service_item.pid:
+                return current
+            executable = service_item.service.command.split()[0].strip('"')
+            observed = process(service_item.pid, cmdline=(executable, '--wf-tcp=80', '--dpi-desync=fake'))
+            return replace(current, items=current.items + (observed,))
+        adapter.snapshot = with_observed_process
+
+        result = transfer_to_netpilot(self.request(adapter), adapter)
+
+        self.assertFalse(result.success)
+        self.assertFalse(any(call[0] in {'delete', 'create'} for call in adapter.calls))
+
+    def test_verified_rollback_removes_only_backup_entries_added_by_that_transaction(self):
+        from zapret_control import load_backup, transfer_to_netpilot
+        external = self.config()
+        custom = self.config('Custom Zapret')
+        failed = TransferAdapter([external, custom], fail=(6, 'before'))
+
+        first = transfer_to_netpilot(self.request(failed), failed)
+
+        self.assertEqual(first.status, 'rolled_back', first.errors)
+        self.assertEqual(load_backup().services, {})
+        failed.configs['Custom Zapret'] = replace(failed.configs['Custom Zapret'], start_mode='manual')
+        failed.fail.clear()
+        second = transfer_to_netpilot(self.request(failed), failed)
+        self.assertTrue(second.success, second.errors)
+        self.assertEqual(load_backup().services, {'Custom Zapret': 'manual'})
 
 
 class StopPlanTests(unittest.TestCase):
