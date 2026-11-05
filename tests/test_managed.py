@@ -46,7 +46,7 @@ class TestManaged(unittest.TestCase):
             self.assertIn(str(root/'lists'/'list-general.txt'),args)
             self.assertNotIn('%',args)
             with self.assertRaises(ValueError):m.zapret_service_command(root,'../general.bat')
-    def test_foreign_service_is_never_replaced_or_removed(self):
+    def test_ordinary_management_never_replaces_or_removes_foreign_service(self):
         with patch.object(m,'service_state',return_value='RUNNING'), \
              patch.object(m,'zapret_service_owned',return_value=False):
             with self.assertRaisesRegex(RuntimeError,'другим приложением'):
@@ -55,6 +55,17 @@ class TestManaged(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'не NetPilot'):
                 with patch.object(m.os,'name','nt'):
                     m.remove_zapret_service()
+    def test_validated_service_command_rejects_missing_exe_and_shell_fragments(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root/'general.bat').write_text('"%BIN%winws.exe" --wf-tcp=443')
+            with self.assertRaises(FileNotFoundError):
+                m.validated_zapret_service_command(root, 'general.bat')
+            (root/'bin').mkdir()
+            (root/'bin'/'winws.exe').write_bytes(b'MZ')
+            (root/'general.bat').write_text('"%BIN%winws.exe" --wf-tcp=443 | echo bad')
+            with self.assertRaises(ValueError):
+                m.validated_zapret_service_command(root, 'general.bat')
     def test_zip_slip_rejected(self):
         b=io.BytesIO()
         with zipfile.ZipFile(b,'w') as f:f.writestr('../evil.txt','evil')

@@ -3,7 +3,7 @@
 No command strings are built here. Adapter mutations must be bounded and must
 address the exact service, task, or process identity supplied by the executor.
 """
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 import json
 import math
@@ -133,6 +133,13 @@ class StopAction(str, Enum):
     STOP_SERVICE = 'stop_service'
     STOP_TASK = 'stop_task'
     STOP_PROCESS = 'stop_process'
+    DELETE_SERVICE = 'delete_service'
+    CREATE_SERVICE = 'create_service'
+    START_SERVICE = 'start_service'
+    RESTORE_SERVICE = 'restore_service'
+    DISABLE_SERVICE = 'disable_service'
+    DISABLE_TASK = 'disable_task'
+    RESTORE_TASK = 'restore_task'
 
 
 @dataclass(frozen=True)
@@ -184,6 +191,13 @@ class ZapretSystemAdapter(Protocol):
     def set_service_start_mode(self, name: str, mode: str) -> None: ...
     def get_task_enabled(self, path: str) -> bool: ...
     def set_task_enabled(self, path: str, enabled: bool) -> None: ...
+    def get_service_backup(self, name: str) -> 'ServiceBackup | None': ...
+    def validate_service_backup(self, backup: 'ServiceBackup') -> None: ...
+    def delete_service(self, name: str) -> None: ...
+    def create_netpilot_service(self, transfer: 'ValidatedTransfer') -> None: ...
+    def restore_service(self, backup: 'ServiceBackup') -> None: ...
+    def start_service(self, name: str) -> None: ...
+    def start_task(self, path: str) -> None: ...
 
 
 def _valid_name(name: str) -> bool:
@@ -413,3 +427,298 @@ def restore_autostart(backup: AutostartBackup, adapter: ZapretSystemAdapter) -> 
     status = ('error' if rejected or final.warnings else
               'partial' if errors or pending.services or pending.tasks else 'success')
     return OperationResult(status, final, final.active, tuple(errors), backup=pending)
+
+
+@dataclass(frozen=True)
+class TransferRequest:
+    folder: str | Path
+    strategy: str
+    snapshot: ZapretSnapshot
+    confirmed: bool = False
+
+
+@dataclass(frozen=True)
+class ServiceBackup:
+    """Exact SCM configuration. Adapters must include everything they need to restore.
+
+    ``adapter_fields`` may contain account, dependencies, service type, delayed
+    start, failure actions, security descriptor and ownership registry values.
+    ``validate_service_backup`` must refuse accounts/configuration that the
+    adapter cannot faithfully recreate (for example an unavailable password).
+    Restore must restore configuration AND the original running/stopped state;
+    it must update an existing custom service in place, never delete it.
+    All fields must be JSON serializable; secrets must not be stored here.
+    """
+    name: str
+    image_path: str
+    start_mode: str
+    state: str
+    display_name: str
+    description: str
+    adapter_fields: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ValidatedTransfer:
+    request: TransferRequest
+    executable: str
+    arguments: str
+    image_path: str
+    stop_plan: StopPlan
+    services: tuple[ServiceBackup, ...]
+    tasks: tuple[tuple[str, bool, bool], ...]
+    matching_service: bool
+
+
+def _service_matches(item: ZapretItem, image_path: str) -> bool:
+    # Exact arguments are intentional: matching executable alone is insufficient.
+    from zapret_inventory import _path, _tokens
+    if not item.service or item.origin != 'netpilot' or item.confidence != 'confirmed':
+        return False
+    actual, wanted = _tokens(item.service.command), _tokens(image_path)
+    return bool(actual and wanted and _path(actual[0]) == _path(wanted[0]) and actual[1:] == wanted[1:])
+
+
+def _check_service_backup(backup, adapter):
+    if (not isinstance(backup, ServiceBackup) or not _valid_name(backup.name) or
+            not isinstance(backup.image_path, str) or not backup.image_path.strip() or
+            backup.start_mode not in _SERVICE_MODES or backup.state not in {'running', 'stopped'} or
+            not isinstance(backup.display_name, str) or not isinstance(backup.description, str) or
+            not isinstance(backup.adapter_fields, dict)):
+        raise ValueError('incomplete recoverable service configuration')
+    json.dumps(asdict(backup), allow_nan=False)
+    adapter.validate_service_backup(backup)
+
+
+def validate_transfer(request: TransferRequest, adapter: ZapretSystemAdapter) -> ValidatedTransfer:
+    """Read-only preflight. The reviewed complete inventory is transfer authority."""
+    from managed import validated_zapret_service_command
+    if not isinstance(request, TransferRequest) or request.confirmed is not True:
+        raise ValueError('ownership transfer requires explicit confirmation')
+    executable, arguments = validated_zapret_service_command(request.folder, request.strategy)
+    image_path = f'"{executable}" {arguments}'
+    current = _snapshot(adapter)
+    if current.warnings or current != request.snapshot:
+        raise ValueError('inventory is incomplete or changed; rescan and confirm again')
+    named = [i for i in current.items if i.service and i.service.name.casefold() == 'zapret']
+    existing = adapter.get_service_backup('zapret')
+    if len(named) > 1 or (existing is not None and not named):
+        raise ValueError('name-conflicting zapret service is not in the confirmed inventory')
+    if named and (named[0].confidence != 'confirmed' or existing is None):
+        raise ValueError('name-conflicting zapret service is not confirmed')
+    matching = bool(named and _service_matches(named[0], image_path))
+    keep_pid = named[0].pid if matching else None
+    targets = tuple(i for i in current.items if not (matching and
+        (i == named[0] or (i.process and keep_pid and i.pid == keep_pid))))
+    plan = make_stop_plan(ZapretSnapshot(targets), StopMode.DISABLE_RESTART)
+    services, tasks = [], []
+    # Capture runtime/configuration for every owner before the first mutation.
+    for item in current.items:
+        if item.confidence != 'confirmed':
+            continue
+        if item.service:
+            backup = adapter.get_service_backup(_identifier(item))
+            _check_service_backup(backup, adapter)
+            if (backup.name.casefold() != item.service.name.casefold() or
+                    backup.image_path != item.service.command or
+                    (backup.state == 'running') != item.active):
+                raise ValueError('service configuration changed during preflight')
+            if backup.name.casefold() not in {b.name.casefold() for b in services}:
+                services.append(backup)
+        elif item.task:
+            name = _identifier(item)
+            enabled = adapter.get_task_enabled(name)
+            if type(enabled) is not bool:
+                raise ValueError('unknown task enabled state')
+            tasks.append((name, enabled, item.active))
+    load_backup()  # Corrupt previous restoration data must never be overwritten.
+    return ValidatedTransfer(request, executable, arguments, image_path, plan,
+                             tuple(services), tuple(tasks), matching)
+
+
+def _save_transfer_backup(transfer: ValidatedTransfer) -> None:
+    """Durable recovery journal, written before even stopping an external owner."""
+    directory = AUTOSTART_DATA_DIR.resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    destination = directory / 'zapret-transfer-v1.json'
+    history = []
+    if destination.exists():
+        previous = json.loads(destination.read_text(encoding='utf-8'))
+        if (not isinstance(previous, dict) or previous.get('owner') != 'NetPilot' or
+                previous.get('version') != 1 or not isinstance(previous.get('services'), dict) or
+                not isinstance(previous.get('tasks'), dict) or not isinstance(previous.get('history', []), list)):
+            raise ValueError('invalid prior service recovery journal; preserve it for manual recovery')
+        history = previous.pop('history', []) + [previous]
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=directory,
+                                         prefix=destination.name + '.', suffix='.tmp', delete=False) as handle:
+            temporary = Path(handle.name)
+            json.dump({'owner': 'NetPilot', 'version': 1,
+                       'services': {b.name: asdict(b) for b in transfer.services},
+                       'tasks': {name: {'enabled': enabled, 'active': active}
+                                 for name, enabled, active in transfer.tasks}, 'history': history},
+                      handle, ensure_ascii=False, indent=2, allow_nan=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _transfer_remaining(snapshot, transfer):
+    target = next((i for i in snapshot.items if i.service and
+                   i.service.name.casefold() == 'zapret' and _service_matches(i, transfer.image_path)), None)
+    conflicts = tuple(i for i in snapshot.active if i != target and not
+                      (target and target.pid and i.process and i.pid == target.pid))
+    return target, conflicts
+
+
+def transfer_to_netpilot(request: TransferRequest, adapter: ZapretSystemAdapter) -> OperationResult:
+    """Transfer confirmed owners, compensating even for mutations that raise afterward.
+
+    Only the explicitly confirmed, name-conflicting ``zapret`` can be deleted.
+    Other owners use the Task 3 durable autostart backup. Rollback never deletes
+    a resource unless this transaction attempted its creation and its current
+    inventory still proves NetPilot ownership and the selected command.
+    """
+    errors, completed = [], []
+    transfer, created, mutated = None, False, False
+    backup = None
+    try:
+        transfer = validate_transfer(request, adapter)
+        _save_transfer_backup(transfer)
+        # Revalidate after durable I/O and immediately before entering mutation.
+        if _snapshot(adapter) != request.snapshot:
+            raise ValueError('inventory changed after backup; rescan and confirm again')
+        for step in transfer.stop_plan.steps:
+            if step.source.kind in {'service', 'task'}:
+                if not (step.source.service and step.identifier.casefold() == 'zapret'):
+                    mutated = True
+                    backup = _disable_autostart(step, adapter, _backup_path())
+                    action = StopAction.DISABLE_SERVICE if step.source.service else StopAction.DISABLE_TASK
+                    completed.append(OperationStep(action, step.identifier, step.source))
+            if not _current(step, adapter):
+                continue
+            mutated = True
+            if step.source.service:
+                adapter.stop_service(step.identifier)
+            elif step.source.task:
+                adapter.stop_task(step.identifier)
+            else:
+                birth = step.source.process.create_time
+                adapter.terminate_process(step.identifier, create_time=birth)
+                if not adapter.wait_process(step.identifier, create_time=birth, timeout=3.0) and _current(step, adapter):
+                    adapter.kill_process(step.identifier, create_time=birth)
+                    adapter.wait_process(step.identifier, create_time=birth, timeout=3.0)
+            completed.append(step)
+        # No creation/deletion until all reviewed conflicts have actually stopped.
+        before = _snapshot(adapter)
+        _, remaining = _transfer_remaining(before, transfer)
+        if before.warnings or remaining:
+            raise RuntimeError('confirmed conflicts remain active or inventory is incomplete')
+        original = next((b for b in transfer.services if b.name.casefold() == 'zapret'), None)
+        if not transfer.matching_service:
+            if original is not None:
+                present = adapter.get_service_backup(original.name)
+                if present is None or asdict(present) != dict(asdict(original), state='stopped'):
+                    raise ValueError('name-conflicting service changed before deletion')
+                source = next(i for i in request.snapshot.items if i.service and i.service.name.casefold() == 'zapret')
+                mutated = True
+                adapter.delete_service(original.name)
+                completed.append(OperationStep(StopAction.DELETE_SERVICE, original.name, source))
+            elif adapter.get_service_backup('zapret') is not None:
+                raise ValueError('a new name-conflicting service appeared')
+            created = mutated = True  # Set before call: SCM may mutate and then raise.
+            adapter.create_netpilot_service(transfer)
+            new = next(i for i in _snapshot(adapter).items if i.service and i.service.name.casefold() == 'zapret')
+            completed.append(OperationStep(StopAction.CREATE_SERVICE, 'zapret', new))
+        current = _snapshot(adapter)
+        target, remaining = _transfer_remaining(current, transfer)
+        if target is None or remaining or current.warnings:
+            raise RuntimeError('could not verify selected NetPilot service configuration')
+        if not target.active:
+            mutated = True
+            adapter.start_service(target.service.name)
+            completed.append(OperationStep(StopAction.START_SERVICE, target.service.name, target))
+        final = _snapshot(adapter)
+        target, remaining = _transfer_remaining(final, transfer)
+        if final.warnings or target is None or not target.active or remaining:
+            raise RuntimeError('final service path, arguments, running state or conflicts failed verification')
+        return OperationResult('success', final, remaining, completed_steps=tuple(completed), backup=backup)
+    except Exception as exc:
+        errors.append(f'transfer: {type(exc).__name__}: {exc}')
+
+    if transfer is not None and mutated:
+        # Each recovery is independent; failure to clean up must not suppress the
+        # recovery of other owners. Re-read rather than trusting the call log.
+        if created:
+            try:
+                current = _snapshot(adapter)
+                target, _ = _transfer_remaining(current, transfer)
+                if target is not None:
+                    if target.active:
+                        adapter.stop_service(target.service.name)
+                    adapter.delete_service(target.service.name)
+            except Exception as exc:
+                errors.append(f'cleanup NetPilot service: {type(exc).__name__}: {exc}')
+        for original in transfer.services:
+            try:
+                current = adapter.get_service_backup(original.name)
+                if current != original:
+                    # Never overwrite an unrelated replacement that appeared in flight.
+                    if current is not None and (current.image_path != original.image_path or
+                            current.adapter_fields != original.adapter_fields):
+                        raise RuntimeError('service identity changed; refusing to overwrite it')
+                    adapter.restore_service(original)
+                if adapter.get_service_backup(original.name) != original:
+                    raise RuntimeError('restored service differs from the exact saved configuration/state')
+                if current != original:
+                    source = next(i for i in request.snapshot.items if i.service and
+                                  i.service.name.casefold() == original.name.casefold())
+                    completed.append(OperationStep(StopAction.RESTORE_SERVICE, original.name, source))
+            except Exception as exc:
+                errors.append(f'restore service {original.name}: {type(exc).__name__}: {exc}')
+        for name, enabled, active in transfer.tasks:
+            try:
+                matches = [i for i in _snapshot(adapter).items if i.task and i.task.name == name and
+                           i.confidence == 'confirmed']
+                previous = next(i for i in request.snapshot.items if i.task and i.task.name == name)
+                if not matches or matches[0].task.command != previous.task.command:
+                    raise RuntimeError('task identity changed; refusing to restore it')
+                if adapter.get_task_enabled(name) != enabled:
+                    adapter.set_task_enabled(name, enabled)
+                if active and not matches[0].active:
+                    adapter.start_task(name)
+                restored = next((i for i in _snapshot(adapter).items if i.task and i.task.name == name), None)
+                if (adapter.get_task_enabled(name) != enabled or restored is None or
+                        restored.active != active or restored.task.command != previous.task.command):
+                    raise RuntimeError('task configuration/state was not restored')
+                completed.append(OperationStep(StopAction.RESTORE_TASK, name, previous))
+            except Exception as exc:
+                errors.append(f'restore task {name}: {type(exc).__name__}: {exc}')
+    try:
+        final = _snapshot(adapter)
+        restored = transfer is not None and not final.warnings
+        if transfer is not None:
+            restored = restored and all(adapter.get_service_backup(b.name) == b for b in transfer.services)
+            restored = restored and all(adapter.get_task_enabled(name) == enabled for name, enabled, _ in transfer.tasks)
+            # Ignore replacement PIDs for restarted owners, but standalone process
+            # identities cannot be reconstructed. Missing processes require recovery.
+            def state(snapshot):
+                owned_pids = {i.pid for i in snapshot.items if i.service and i.active and
+                              i.confidence == 'confirmed' and i.pid}
+                return sorted((i.kind, str(_identifier(i)), i.origin, i.confidence, i.active,
+                               i.service.command if i.service else i.task.command if i.task else
+                               repr(i.process)) for i in snapshot.items if i.confidence == 'confirmed' and
+                              not (i.process and i.pid in owned_pids))
+            restored = restored and state(final) == state(request.snapshot)
+        status = 'rolled_back' if restored else 'manual_recovery_required' if mutated else 'error'
+        if final.warnings:
+            errors.extend(final.warnings)
+        return OperationResult(status, final, final.active, tuple(errors), tuple(completed), backup)
+    except Exception as exc:
+        errors.append(f'rollback verification: {type(exc).__name__}: {exc}')
+        return OperationResult('manual_recovery_required' if mutated else 'error', None,
+                               errors=tuple(errors), completed_steps=tuple(completed), backup=backup)

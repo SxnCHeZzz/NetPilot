@@ -331,6 +331,26 @@ def _service_run(argv,timeout=20,allow=(0,)):
     return result
 
 
+def validated_zapret_service_command(folder, strategy):
+    """Validate all local inputs before an installer or ownership transfer mutates SCM."""
+    base = Path(folder).resolve()
+    exe, args = zapret_service_command(base, strategy)
+    for path in (base / strategy, Path(exe)):
+        if not path.resolve().is_relative_to(base):
+            raise ValueError('Zapret command path escapes the selected component folder.')
+    if not Path(exe).is_file():
+        raise FileNotFoundError('Не найден bin\\winws.exe.')
+    quoted = False
+    for char in args:
+        if char == '"':
+            quoted = not quoted
+        elif ord(char) < 32 or (not quoted and char in '&|<>^'):
+            raise ValueError('Invalid generated Zapret service command.')
+    if quoted:
+        raise ValueError('Unbalanced quotes in generated Zapret service command.')
+    return exe, args
+
+
 def _wait_service_absent(timeout=6):
     deadline=time.monotonic()+timeout
     while time.monotonic()<deadline:
@@ -345,8 +365,7 @@ def install_zapret_service(folder,strategy):
     state=service_state(ZAPRET_SERVICE)
     if state!='not_installed' and not zapret_service_owned():
         raise RuntimeError('Служба Zapret уже установлена другим приложением. NetPilot не будет её заменять.')
-    exe,args=zapret_service_command(folder,strategy)
-    if not Path(exe).is_file():raise FileNotFoundError('Не найден bin\\winws.exe.')
+    exe,args=validated_zapret_service_command(folder,strategy)
     lists=Path(folder)/'lists';lists.mkdir(parents=True,exist_ok=True)
     defaults={'ipset-exclude-user.txt':'203.0.113.113/32\n',
               'list-general-user.txt':'# Never leave this file empty\ndomain.example.abc\n',

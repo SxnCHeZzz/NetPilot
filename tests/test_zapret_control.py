@@ -30,6 +30,336 @@ def task(name=r'\Custom\Startup', active=True):
                       task=TaskRecord(name, COMMAND, 'running' if active else 'ready'))
 
 
+class TransferAdapter:
+    """Stateful SCM/task boundary, with failures before or after one mutation."""
+    def __init__(self, configs=(), task_active=False, fail=None):
+        self.configs = {c.name: c for c in configs}
+        self.tasks = {r'\Custom\Startup': [True, task_active]} if task_active else {}
+        self.calls = []
+        self.fail = {fail} if isinstance(fail, tuple) else set(fail or ())
+        self.mutations = 0
+        self.warnings = ()
+
+    def mutate(self, action, change):
+        self.mutations += 1
+        self.calls.append(action)
+        if (self.mutations, 'before') in self.fail:
+            raise RuntimeError('injected before mutation')
+        change()
+        if (self.mutations, 'after') in self.fail:
+            raise RuntimeError('injected after mutation')
+
+    def snapshot(self):
+        items = [ZapretItem('service', 'netpilot' if c.adapter_fields.get('owned') else 'external',
+            'confirmed', c.state == 'running', ('zapret-arguments',),
+            service=ServiceRecord(c.name, c.image_path, c.state, 11 if c.state == 'running' else None))
+            for c in self.configs.values()]
+        items += [task(name, active=values[1]) for name, values in self.tasks.items()]
+        return ZapretSnapshot(tuple(items), self.warnings)
+
+    def get_service_backup(self, name):
+        return self.configs.get(name)
+
+    def validate_service_backup(self, backup):
+        if not {'account', 'owned'} <= backup.adapter_fields.keys():
+            raise ValueError('missing restoration account/ownership metadata')
+
+    def stop_service(self, name):
+        self.mutate(('stop', name), lambda: self.configs.update({name: replace(self.configs[name], state='stopped')}))
+
+    def start_service(self, name):
+        self.mutate(('start', name), lambda: self.configs.update({name: replace(self.configs[name], state='running')}))
+
+    def delete_service(self, name):
+        self.mutate(('delete', name), lambda: self.configs.pop(name))
+
+    def create_netpilot_service(self, validated):
+        from zapret_control import ServiceBackup
+        def create():
+            if 'zapret' in self.configs:
+                raise RuntimeError('service already exists')
+            self.configs['zapret'] = ServiceBackup('zapret', validated.image_path, 'automatic',
+                'stopped', 'zapret', 'NetPilot Zapret', {'account': 'LocalSystem', 'owned': True})
+        self.mutate(('create', 'zapret'), create)
+
+    def restore_service(self, backup):
+        self.mutate(('restore', backup.name), lambda: self.configs.update({backup.name: backup}))
+
+    def get_service_start_mode(self, name):
+        return self.configs[name].start_mode
+
+    def set_service_start_mode(self, name, mode):
+        self.mutate(('mode', name, mode), lambda: self.configs.update({name: replace(self.configs[name], start_mode=mode)}))
+
+    def get_task_enabled(self, name):
+        return self.tasks[name][0]
+
+    def set_task_enabled(self, name, enabled):
+        self.mutate(('enabled', name, enabled), lambda: self.tasks[name].__setitem__(0, enabled))
+
+    def stop_task(self, name):
+        self.mutate(('stop_task', name), lambda: self.tasks[name].__setitem__(1, False))
+
+    def start_task(self, name):
+        self.mutate(('start_task', name), lambda: self.tasks[name].__setitem__(1, True))
+
+
+class TransferTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1])
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        (self.root / 'bin').mkdir()
+        (self.root / 'bin' / 'winws.exe').write_bytes(b'MZ')
+        (self.root / 'general.bat').write_text('start "zapret" "%BIN%winws.exe" --wf-tcp=443 --dpi-desync=fake\n')
+        self.storage = self.root / 'data'
+        p = patch('zapret_control.AUTOSTART_DATA_DIR', self.storage)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def config(self, name='zapret', owned=False, state='running'):
+        from zapret_control import ServiceBackup
+        image = (f'"{self.root / "bin" / "winws.exe"}" --wf-tcp=443 --dpi-desync=fake' if owned
+                 else r'"C:\External App\bin\winws.exe" --wf-tcp=80 --dpi-desync=split2')
+        return ServiceBackup(name, image, 'automatic_delayed', state, 'My external service',
+                             'Exact description', {'account': 'LocalSystem', 'owned': owned, 'dependencies': ['Tcpip']})
+
+    def request(self, adapter, **changes):
+        from zapret_control import TransferRequest
+        values = dict(folder=self.root, strategy='general.bat', snapshot=adapter.snapshot(), confirmed=True)
+        values.update(changes)
+        return TransferRequest(**values)
+
+    def test_preflight_rejects_missing_traversing_and_malformed_strategy_without_mutation(self):
+        from zapret_control import validate_transfer
+        adapter = TransferAdapter()
+        for strategy in ('missing.bat', '../general.bat', r'..\general.bat'):
+            with self.subTest(strategy=strategy), self.assertRaises(ValueError):
+                validate_transfer(self.request(adapter, strategy=strategy), adapter)
+        for text in ('echo hello', '"%BIN%winws.exe" invalid', '"%BIN%winws.exe" --wf-tcp=%UNKNOWN%',
+                     '"%BIN%winws.exe" --wf-tcp=443 & echo bad', '"%BIN%winws.exe" --hostlist="unclosed'):
+            (self.root / 'general.bat').write_text(text)
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                validate_transfer(self.request(adapter), adapter)
+        self.assertEqual(adapter.calls, [])
+
+    def test_missing_executable_and_unconfirmed_request_are_rejected(self):
+        from zapret_control import validate_transfer
+        adapter = TransferAdapter()
+        with self.assertRaises(ValueError):
+            validate_transfer(self.request(adapter, confirmed=False), adapter)
+        (self.root / 'bin' / 'winws.exe').unlink()
+        with self.assertRaises(FileNotFoundError):
+            validate_transfer(self.request(adapter), adapter)
+        self.assertEqual(adapter.calls, [])
+
+    def test_matching_service_is_idempotent_and_only_starts_when_stopped(self):
+        from zapret_control import transfer_to_netpilot
+        for state in ('running', 'stopped'):
+            adapter = TransferAdapter([self.config(owned=True, state=state)])
+            result = transfer_to_netpilot(self.request(adapter), adapter)
+            self.assertEqual(result.status, 'success', result.errors)
+            self.assertEqual(adapter.calls, [] if state == 'running' else [('start', 'zapret')])
+            self.assertEqual(adapter.configs['zapret'].state, 'running')
+
+    def test_explicit_transfer_backs_up_external_service_and_disables_other_owners(self):
+        from zapret_control import transfer_to_netpilot, load_backup
+        original = self.config()
+        adapter = TransferAdapter([original, self.config('Custom Zapret')], task_active=True)
+        original_delete = adapter.delete_service
+        def checked_delete(name):
+            raw = json.loads((self.storage / 'zapret-transfer-v1.json').read_text())
+            saved = raw['services']['zapret']
+            self.assertEqual(saved['image_path'], original.image_path)
+            self.assertEqual(saved['adapter_fields'], original.adapter_fields)
+            self.assertEqual(saved['display_name'], original.display_name)
+            self.assertEqual(saved['description'], original.description)
+            self.assertEqual(saved['start_mode'], 'automatic_delayed')
+            self.assertEqual(saved['state'], 'running')
+            original_delete(name)
+        adapter.delete_service = checked_delete
+        result = transfer_to_netpilot(self.request(adapter), adapter)
+        self.assertEqual(result.status, 'success', result.errors)
+        self.assertEqual([c for c in adapter.calls if c[0] == 'delete'], [('delete', 'zapret')])
+        self.assertEqual(adapter.configs['Custom Zapret'].start_mode, 'disabled')
+        self.assertEqual(adapter.configs['Custom Zapret'].state, 'stopped')
+        self.assertEqual(adapter.tasks[r'\Custom\Startup'], [False, False])
+        backup = load_backup()
+        self.assertEqual(backup.services, {'Custom Zapret': 'automatic_delayed'})
+        self.assertEqual(backup.tasks, {r'\Custom\Startup': True})
+
+    def test_failure_before_and_after_every_mutation_restores_exact_configuration_and_state(self):
+        from zapret_control import transfer_to_netpilot
+        configs = [self.config(), self.config('Custom Zapret')]
+        baseline = TransferAdapter(configs, task_active=True)
+        self.assertTrue(transfer_to_netpilot(self.request(baseline), baseline).success)
+        for index in range(1, baseline.mutations + 1):
+            for phase in ('before', 'after'):
+                with self.subTest(index=index, action=baseline.calls[index-1], phase=phase):
+                    adapter = TransferAdapter(configs, task_active=True, fail=(index, phase))
+                    result = transfer_to_netpilot(self.request(adapter), adapter)
+                    self.assertEqual(result.status, 'rolled_back', result.errors)
+                    self.assertEqual(adapter.configs, {c.name: c for c in configs})
+                    self.assertEqual(adapter.tasks[r'\Custom\Startup'], [True, True])
+                    self.assertIsNotNone(result.final_snapshot)
+
+    def test_backup_write_failure_prevents_all_system_mutations(self):
+        from zapret_control import transfer_to_netpilot
+        adapter = TransferAdapter([self.config()])
+        with patch('zapret_control.os.replace', side_effect=OSError('disk full')):
+            result = transfer_to_netpilot(self.request(adapter), adapter)
+        self.assertFalse(result.success)
+        self.assertEqual(adapter.calls, [])
+
+    def test_failed_restoration_reports_manual_recovery_with_persisted_original(self):
+        from zapret_control import transfer_to_netpilot
+        adapter = TransferAdapter([self.config()], fail=(3, 'after'))
+        adapter.restore_service = lambda backup: (_ for _ in ()).throw(PermissionError('restore denied'))
+        result = transfer_to_netpilot(self.request(adapter), adapter)
+        self.assertEqual(result.status, 'manual_recovery_required', result.errors)
+        self.assertTrue((self.storage / 'zapret-transfer-v1.json').is_file())
+        self.assertTrue(any('restore denied' in error for error in result.errors))
+
+    def test_stale_or_ambiguous_name_conflict_and_incomplete_inventory_reject_before_mutation(self):
+        from zapret_control import validate_transfer
+        adapter = TransferAdapter([self.config()])
+        request = self.request(adapter)
+        adapter.configs['zapret'] = replace(adapter.configs['zapret'], image_path='changed')
+        with self.assertRaises(ValueError):
+            validate_transfer(request, adapter)
+        adapter.warnings = ('services inaccessible',)
+        with self.assertRaises(ValueError):
+            validate_transfer(self.request(adapter), adapter)
+        adapter.warnings = ()
+        snap = adapter.snapshot()
+        adapter.snapshot = lambda: ZapretSnapshot(tuple(replace(i, confidence='ambiguous') for i in snap.items))
+        with self.assertRaises(ValueError):
+            validate_transfer(self.request(adapter), adapter)
+        self.assertEqual(adapter.calls, [])
+
+    def test_failed_start_wrong_command_and_final_conflict_never_report_success(self):
+        from zapret_control import transfer_to_netpilot
+        for problem in ('no_start', 'wrong_args', 'conflict', 'incomplete'):
+            with self.subTest(problem=problem):
+                adapter = TransferAdapter([self.config()])
+                start = adapter.start_service
+                def broken_start(name):
+                    if problem != 'no_start':
+                        start(name)
+                    if problem == 'wrong_args':
+                        adapter.configs[name] = replace(adapter.configs[name], image_path=adapter.configs[name].image_path + ' --wrong')
+                    elif problem == 'conflict':
+                        adapter.configs['New Zapret'] = self.config('New Zapret')
+                    elif problem == 'incomplete':
+                        adapter.warnings = ('tasks inaccessible',)
+                adapter.start_service = broken_start
+                result = transfer_to_netpilot(self.request(adapter), adapter)
+                self.assertFalse(result.success)
+                self.assertEqual(result.status, 'rolled_back' if problem == 'no_start' else 'manual_recovery_required')
+                if problem == 'conflict':
+                    self.assertNotIn(('delete', 'New Zapret'), adapter.calls)
+
+    def test_missing_adapter_restoration_fields_are_rejected_before_mutation(self):
+        from zapret_control import validate_transfer
+        adapter = TransferAdapter([replace(self.config(), adapter_fields={})])
+        with self.assertRaises(ValueError):
+            validate_transfer(self.request(adapter), adapter)
+        self.assertEqual(adapter.calls, [])
+
+    def test_recovery_journal_preserves_earlier_external_configuration_on_next_transfer(self):
+        from zapret_control import transfer_to_netpilot
+        original = self.config()
+        adapter = TransferAdapter([original])
+        self.assertTrue(transfer_to_netpilot(self.request(adapter), adapter).success)
+        self.assertTrue(transfer_to_netpilot(self.request(adapter), adapter).success)
+        raw = json.loads((self.storage / 'zapret-transfer-v1.json').read_text())
+        self.assertTrue(any(entry['services']['zapret']['image_path'] == original.image_path
+                            for entry in raw['history']))
+
+    def test_step_results_include_disabled_owners_and_verified_restoration(self):
+        from zapret_control import transfer_to_netpilot
+        adapter = TransferAdapter([self.config(), self.config('Custom Zapret')], task_active=True)
+        result = transfer_to_netpilot(self.request(adapter), adapter)
+        actions = [s.action.value for s in result.completed_steps]
+        self.assertIn('disable_service', actions)
+        self.assertIn('disable_task', actions)
+        adapter = TransferAdapter([self.config()], fail=(3, 'after'))
+        result = transfer_to_netpilot(self.request(adapter), adapter)
+        self.assertEqual(result.status, 'rolled_back')
+        self.assertIn('restore_service', [s.action.value for s in result.completed_steps])
+
+    def test_stopped_standalone_process_cannot_be_claimed_as_rolled_back(self):
+        from zapret_control import transfer_to_netpilot
+        adapter = TransferAdapter([self.config()], fail=(3, 'before'))
+        processes = [process(21)]
+        snapshot = adapter.snapshot
+        adapter.snapshot = lambda: replace(snapshot(), items=snapshot().items + tuple(processes))
+        adapter.terminate_process = lambda pid, create_time: processes.clear()
+        adapter.wait_process = lambda pid, create_time, timeout: not processes
+        result = transfer_to_netpilot(self.request(adapter), adapter)
+        self.assertEqual(result.status, 'manual_recovery_required')
+        self.assertFalse(processes)
+
+    def test_matching_stopped_service_start_failure_restores_without_delete_or_create(self):
+        from zapret_control import transfer_to_netpilot
+        for phase in ('before', 'after'):
+            original = self.config(owned=True, state='stopped')
+            adapter = TransferAdapter([original], fail=(1, phase))
+            result = transfer_to_netpilot(self.request(adapter), adapter)
+            self.assertEqual(result.status, 'rolled_back', result.errors)
+            self.assertEqual(adapter.configs['zapret'], original)
+            self.assertFalse(any(c[0] in {'delete', 'create'} for c in adapter.calls))
+
+    def test_restarted_service_owned_process_with_new_pid_is_verified_as_restored(self):
+        from zapret_control import transfer_to_netpilot
+        adapter = TransferAdapter([self.config()], fail=(3, 'before'))
+        snapshot = adapter.snapshot
+        pid = [11]
+        def with_process():
+            current = snapshot()
+            items = [replace(i, service=replace(i.service, pid=pid[0] if i.active else None)) for i in current.items]
+            if any(i.active for i in items):
+                items.append(process(pid[0], create_time=float(pid[0])))
+            return replace(current, items=tuple(items))
+        adapter.snapshot = with_process
+        restore = adapter.restore_service
+        def restart(backup):
+            restore(backup)
+            pid[0] = 99
+        adapter.restore_service = restart
+        result = transfer_to_netpilot(self.request(adapter), adapter)
+        self.assertEqual(result.status, 'rolled_back', result.errors)
+
+    def test_corrupt_recovery_journal_is_preserved_without_system_changes(self):
+        from zapret_control import transfer_to_netpilot
+        self.storage.mkdir()
+        path = self.storage / 'zapret-transfer-v1.json'
+        path.write_text('not json')
+        adapter = TransferAdapter([self.config()])
+        result = transfer_to_netpilot(self.request(adapter), adapter)
+        self.assertFalse(result.success)
+        self.assertEqual(adapter.calls, [])
+        self.assertEqual(path.read_text(), 'not json')
+
+    def test_cleanup_and_restore_failure_results_follow_verified_state(self):
+        from zapret_control import transfer_to_netpilot
+        # Start mutates and raises, then recovery tries stop, delete, restore.
+        for index, phase, expected in ((5, 'before', 'manual_recovery_required'),
+                (5, 'after', 'manual_recovery_required'), (6, 'before', 'manual_recovery_required'),
+                (6, 'after', 'rolled_back'), (7, 'before', 'manual_recovery_required'),
+                (7, 'after', 'rolled_back')):
+            with self.subTest(index=index, phase=phase):
+                original = self.config()
+                adapter = TransferAdapter([original], fail=[(4, 'after'), (index, phase)])
+                result = transfer_to_netpilot(self.request(adapter), adapter)
+                self.assertEqual(result.status, expected, result.errors)
+                if expected == 'rolled_back':
+                    self.assertEqual(adapter.configs['zapret'], original)
+                else:
+                    self.assertNotEqual(adapter.configs.get('zapret'), original)
+                self.assertTrue((self.storage / 'zapret-transfer-v1.json').is_file())
+
+
 class StopPlanTests(unittest.TestCase):
     def test_temporary_plan_stops_owners_before_processes_without_startup_changes(self):
         snapshot = ZapretSnapshot((process(), task(), service()))
