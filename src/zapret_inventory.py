@@ -1,0 +1,239 @@
+"""Read-only, conservative inventory of local Zapret installations.
+
+Discovery is deliberately separate from classification. A candidate name never
+authorizes an action: consumers must use confirmed items in ``snapshot.active``.
+Windows paths are compared with ntpath, including when tests run on another OS.
+"""
+from dataclasses import dataclass
+import json
+import ntpath
+from pathlib import Path
+import re
+import subprocess
+from typing import Iterable, Protocol
+
+
+def _path(value: str) -> str:
+    return ntpath.normcase(ntpath.normpath(value.strip('"'))) if value else ''
+
+
+def _tokens(command: str) -> tuple[str, ...]:
+    return tuple(part.strip('"') for part in re.findall(r'[^\s"]*"[^"]*"[^\s"]*|[^\s"]+', command))
+
+
+@dataclass(frozen=True)
+class ProcessRecord:
+    pid: int
+    name: str = ''
+    exe: str = ''
+    cmdline: tuple[str, ...] = ()
+    create_time: float | None = None
+    root_entries: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+    def __post_init__(self):
+        object.__setattr__(self, 'exe', _path(self.exe))
+        object.__setattr__(self, 'cmdline', _tokens(self.cmdline) if isinstance(self.cmdline, str) else tuple(self.cmdline))
+        object.__setattr__(self, 'root_entries', tuple(str(x).casefold() for x in self.root_entries))
+        object.__setattr__(self, 'warnings', tuple(self.warnings))
+
+
+@dataclass(frozen=True)
+class ServiceRecord:
+    name: str
+    command: str
+    state: str = 'unknown'
+    pid: int | None = None
+
+
+@dataclass(frozen=True)
+class TaskRecord:
+    name: str
+    command: str
+    state: str = 'unknown'
+    pid: int | None = None
+
+
+@dataclass(frozen=True)
+class ZapretItem:
+    kind: str
+    origin: str
+    confidence: str
+    active: bool
+    evidence: tuple[str, ...]
+    process: ProcessRecord | None = None
+    service: ServiceRecord | None = None
+    task: TaskRecord | None = None
+
+    @property
+    def pid(self) -> int | None:
+        record = self.process or self.service or self.task
+        return record.pid if record else None
+
+
+@dataclass(frozen=True)
+class ZapretSnapshot:
+    items: tuple[ZapretItem, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def active(self) -> tuple[ZapretItem, ...]:
+        return tuple(item for item in self.items if item.active and item.confidence == 'confirmed')
+
+    @property
+    def ambiguous(self) -> tuple[ZapretItem, ...]:
+        return tuple(item for item in self.items if item.confidence == 'ambiguous')
+
+    @property
+    def active_count(self) -> int:
+        # A service and its observed process describe one running instance.
+        return len({('pid', item.pid) if item.pid else (item.kind, _item_name(item))
+                    for item in self.active})
+
+    @property
+    def state(self) -> str:
+        if self.active_count > 1:
+            return 'multiple'
+        if self.active:
+            return 'managed' if self.active[0].origin == 'netpilot' else 'external'
+        return 'ambiguous' if self.ambiguous else 'inactive'
+
+
+def _item_name(item: ZapretItem) -> str:
+    record = item.process or item.service or item.task
+    return str(record.name).casefold()
+
+
+class WindowsInventoryAdapter(Protocol):
+    def iter_processes(self) -> Iterable[ProcessRecord]: ...
+    def iter_services(self) -> Iterable[ServiceRecord]: ...
+    def iter_tasks(self) -> Iterable[TaskRecord]: ...
+
+
+def classify_process(record: ProcessRecord, known_roots: Iterable[str]) -> ZapretItem | None:
+    executable = record.exe
+    name = ntpath.basename(executable or record.name).casefold()
+    if name not in {'winws.exe', 'winws2.exe'}:
+        return None
+    evidence = ['executable-name']
+    managed = bool(executable) and any(
+        executable.startswith(_path(root).rstrip('\\') + '\\') for root in known_roots if root)
+    if managed:
+        evidence.append('netpilot-root')
+        return ZapretItem('process', 'netpilot', 'confirmed', True, tuple(evidence), process=record)
+    arguments = tuple(arg.casefold() for arg in record.cmdline)
+    has_filter = any(arg.startswith(('--wf-tcp=', '--wf-udp=')) for arg in arguments)
+    has_desync = any(arg.startswith('--dpi-desync=') for arg in arguments)
+    if has_filter and has_desync:
+        evidence.append('zapret-arguments')
+    root = ntpath.dirname(ntpath.dirname(executable)) if ntpath.basename(ntpath.dirname(executable)) == 'bin' else ''
+    entries = set(record.root_entries)
+    structure = {'bin', 'lists'}.issubset(entries) and bool({'utils', 'general.bat', 'service.bat'} & entries)
+    # A fully qualified list under the executable's sibling lists directory is
+    # a distinct layout signal, also available for service/task action records.
+    list_layout = bool(root) and any(
+        arg.startswith(('--hostlist=', '--ipset=')) and
+        _path(arg.split('=', 1)[1]).startswith(root + '\\lists\\') for arg in arguments)
+    if structure or list_layout:
+        evidence.append('distribution-layout')
+    confirmed = 'zapret-arguments' in evidence and 'distribution-layout' in evidence
+    return ZapretItem('process', 'external', 'confirmed' if confirmed else 'ambiguous',
+                      True, tuple(evidence), process=record)
+
+
+def build_snapshot(adapter: WindowsInventoryAdapter, known_roots: Iterable[str]) -> ZapretSnapshot:
+    roots = tuple(known_roots)
+    items, warnings, seen = [], [], set()
+    for kind, method in (('process', 'iter_processes'), ('service', 'iter_services'), ('task', 'iter_tasks')):
+        try:
+            for record in getattr(adapter, method)():
+                identity = (kind, record.pid if kind == 'process' else record.name.casefold(),
+                            record.command if kind == 'task' else '')
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                if kind == 'process':
+                    warnings.extend(record.warnings)
+                    item = classify_process(record, roots)
+                else:
+                    parts = _tokens(record.command)
+                    process = ProcessRecord(record.pid or 0, exe=parts[0] if parts else '', cmdline=parts[1:])
+                    classified = classify_process(process, roots)
+                    item = None if classified is None else ZapretItem(
+                        kind, classified.origin, classified.confidence,
+                        record.state.casefold() == 'running', classified.evidence,
+                        service=record if kind == 'service' else None,
+                        task=record if kind == 'task' else None)
+                if item is not None:
+                    items.append(item)
+        except Exception as exc:
+            warnings.append(f'{kind} discovery incomplete: {type(exc).__name__}: {exc}')
+    warnings.extend(getattr(adapter, 'warnings', ()))
+    return ZapretSnapshot(tuple(items), tuple(dict.fromkeys(warnings)))
+
+
+class PsutilWindowsInventoryAdapter:
+    """Normalize psutil and bounded PowerShell read-only discovery results.
+
+    Each query has its own timeout. Errors are surfaced by ``build_snapshot``;
+    records yielded before an error and other sources remain available.
+    """
+
+    def __init__(self, timeout: float = 4.0):
+        if timeout <= 0:
+            raise ValueError('timeout must be positive')
+        self.timeout = timeout
+
+    def iter_processes(self) -> Iterable[ProcessRecord]:
+        import psutil
+        for process in psutil.process_iter():
+            warnings = []
+
+            def detail(name, default):
+                try:
+                    return getattr(process, name)() or default
+                except (psutil.Error, OSError) as exc:
+                    warnings.append(f'process {process.pid} {name}: {type(exc).__name__}')
+                    return default
+
+            name = detail('name', '')
+            if name and name.casefold() not in {'winws.exe', 'winws2.exe'}:
+                continue
+            exe = detail('exe', '')
+            cmdline = detail('cmdline', ())
+            create_time = detail('create_time', None)
+            entries = ()
+            if exe and ntpath.basename(ntpath.dirname(exe)).casefold() == 'bin':
+                root = Path(exe).parent.parent
+                try:
+                    # Only inspect fixed distribution markers, never recurse.
+                    entries = tuple(marker for marker in ('bin', 'lists', 'utils', 'general.bat', 'service.bat')
+                                    if (root / marker).exists())
+                except OSError as exc:
+                    warnings.append(f'process {process.pid} layout: {type(exc).__name__}')
+            yield ProcessRecord(process.pid, name, exe, tuple(cmdline), create_time, entries, tuple(warnings))
+
+    def _query(self, script: str) -> list[dict]:
+        prefix = '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $ErrorActionPreference="Stop"; '
+        result = subprocess.run(
+            ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', prefix + script],
+            capture_output=True, text=True, encoding='utf-8', errors='replace',
+            timeout=self.timeout, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        if result.returncode:
+            raise RuntimeError(result.stderr.strip() or f'query exited {result.returncode}')
+        data = json.loads(result.stdout.strip() or '[]')
+        return [data] if isinstance(data, dict) else data or []
+
+    def iter_services(self) -> Iterable[ServiceRecord]:
+        rows = self._query('Get-CimInstance Win32_Service | Select-Object Name,PathName,State,ProcessId | ConvertTo-Json -Compress')
+        for row in rows:
+            yield ServiceRecord(str(row['Name']), str(row.get('PathName') or ''),
+                                str(row.get('State') or 'unknown').casefold(), int(row.get('ProcessId') or 0) or None)
+
+    def iter_tasks(self) -> Iterable[TaskRecord]:
+        rows = self._query(
+            'Get-ScheduledTask | ForEach-Object { $task=$_; foreach($action in $task.Actions) {'
+            ' [pscustomobject]@{Name=($task.TaskPath+$task.TaskName); State=[string]$task.State;'
+            ' Command=(\'"\'+$action.Execute+\'" \'+$action.Arguments)} } } | ConvertTo-Json -Compress')
+        for row in rows:
+            yield TaskRecord(str(row['Name']), str(row.get('Command') or ''), str(row.get('State') or 'unknown').casefold())
