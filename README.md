@@ -30,7 +30,7 @@ NetPilot объединяет три сетевых инструмента в о
 - **Telegram Proxy** — встроенный консольный прокси без второго значка в трее.
 - **Cloudflare WARP** — установка официального клиента и управление через <code>warp-cli</code>.
 
-NetPilot управляет только собственными процессами и службами. Системные запросы UAC всегда остаются видимыми.
+NetPilot отдельно показывает собственный и подтверждённый внешний Zapret. Внешние процессы, службы и задания изменяются только после явного подтверждения; системные запросы UAC всегда остаются видимыми.
 
 ## Интерфейс
 
@@ -42,10 +42,11 @@ NetPilot управляет только собственными процесс
 
 ## Как это работает
 
-1. NetPilot проверяет установленные компоненты и показывает их состояние на главном экране и в трее.
+1. NetPilot в фоне проверяет установленные компоненты, процессы, службы и задания Zapret и показывает фактическое состояние на главном экране и в трее.
 2. Для Zapret можно запустить выбранную стратегию сразу либо сравнить доступные конфигурации по HTTPS-доступности и задержке.
 3. Лучшая стратегия применяется автоматически; Telegram Proxy и WARP управляются независимо.
-4. При отмене или ошибке теста NetPilot пытается вернуть предыдущую стратегию, которой управлял сам.
+4. После успешного ручного подбора NetPilot предлагает запускать выбранную стратегию вместе с Windows; автоматическая проверка не открывает это предложение и не вызывает UAC.
+5. При отмене или ошибке теста NetPilot пытается вернуть предыдущую стратегию, которой управлял сам.
 
 Все потенциально системные действия — установка драйвера, WARP или службы Zapret — выполняются только через видимый запрос UAC.
 
@@ -55,9 +56,10 @@ NetPilot управляет только собственными процесс
 
 - Загружает официальный релиз [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube).
 - Запускает выбранный <code>general*.bat</code> без отдельной консоли.
-- Отслеживает PID только собственных процессов и не завершает чужой <code>winws.exe</code>.
-- Устанавливает выбранную стратегию как службу Windows с автоматическим запуском.
-- Помечает созданную службу и удаляет только службу, принадлежащую NetPilot.
+- Различает собственный, внешний, множественный и частично остановленный Zapret по пути, аргументам и структуре установки; одного имени <code>winws.exe</code> недостаточно.
+- Может остановить все подтверждённые экземпляры Zapret, не удаляя внешние файлы и общие драйверы.
+- Передаёт выбранную стратегию службе NetPilot транзакционно: сохраняет заменяемую конфигурацию, повторно проверяет состояние после UAC и откатывает изменения при ошибке.
+- Обычное удаление службы по-прежнему затрагивает только службу, принадлежащую NetPilot.
 - Сохраняет пользовательские списки и активные fake-файлы при обновлении.
 
 ### Подбор стратегии
@@ -66,6 +68,7 @@ NetPilot управляет только собственными процесс
 - Проверяет HTTPS через системный curl: HTTP/1.1, TLS 1.2 и TLS 1.3, где они поддерживаются.
 - Сначала учитывает число доступных адресов, затем задержку ответа.
 - Автоматически применяет победившую стратегию.
+- После успешного ручного подбора один раз за сеанс предлагает включить автозапуск победителя.
 - Раз в 15 минут выполняет лёгкую фоновую проверку восьми адресов, не перезапуская Zapret.
 - После двух неудачных проверок автоматически сравнивает стратегии, если Zapret запущен самим NetPilot, приложение уже имеет права администратора и нет конфликтующей службы или WARP.
 - При ошибке или отмене пытается восстановить предыдущую NetPilot-стратегию.
@@ -95,6 +98,7 @@ NetPilot управляет только собственными процесс
 - Левый клик открывает компактное окно возле области уведомлений.
 - Контекстное меню содержит быстрые действия и подбор стратегии.
 - Значок меняется по состоянию: серый — ожидание, зелёный — есть активные подключения, янтарный — выполняется операция, красный — требуется внимание.
+- Контурные иконки и переключатели анимируются только во время реального перехода состояния; сворачивание и восстановление окна не затрагивают сетевые процессы.
 - Три точки под знаком показывают число активных компонентов; точные состояния доступны в подсказке и контекстном меню.
 - Автозапуск NetPilot и автозапуск Zapret являются разными настройками.
 - Поддерживаются запуск свёрнутым и автоматические обновления компонентов.
@@ -137,8 +141,9 @@ Telegram Proxy уже входит в сборку.
 
 - UAC запрашивается при создании или удалении службы.
 - Служба запускается независимо от окна NetPilot.
-- NetPilot записывает признак владения и не заменяет службу Flowseal или другой программы.
-- Сторонняя служба остаётся доступной через оригинальный <code>service.bat</code>.
+- Если обнаружен внешний Zapret, NetPilot заранее показывает подтверждение, останавливает только подтверждённые объекты и сохраняет исходный автозапуск для отдельного восстановления.
+- Конфликтующая служба с именем <code>zapret</code> заменяется только в рамках подтверждённой транзакции; другие внешние службы и задания не удаляются, а их автозапуск отключается обратимо.
+- При неуспешной передаче NetPilot пытается вернуть точную сохранённую конфигурацию и проверяет результат. Восстановление, которое Windows не подтвердила, не выдаётся за успешное.
 
 Проверка:
 
@@ -148,6 +153,16 @@ sc.exe qc zapret
 ~~~
 
 Ожидаемые признаки: <code>RUNNING</code>, <code>AUTO_START</code>, путь к <code>winws.exe</code> и аргументы стратегии.
+
+## Полная остановка Zapret
+
+Действие **Остановить весь Zapret** появляется только при подтверждённой активности:
+
+- **Остановить сейчас** завершает подтверждённые службы, задания и процессы, не меняя их автозапуск.
+- **Остановить и отключить автозапуск** сначала сохраняет текущие режимы служб/заданий, затем отключает их перезапуск и останавливает Zapret.
+- **Восстановить внешний автозапуск Zapret** появляется в настройках, пока сохранённые записи не восстановлены и не проверены.
+
+Неоднозначные процессы не останавливаются автоматически. Отмена UAC ничего не изменяет. Если служба исчезла, была перенастроена другим приложением или её учётную запись нельзя безопасно восстановить, NetPilot сохраняет запись для ручной проверки вместо заявления об успехе.
 
 ## Безопасность и данные
 
@@ -164,7 +179,7 @@ sc.exe qc zapret
 | Проблема | Что проверить |
 |---|---|
 | Zapret не запускается | Подтвердите UAC. Проверьте <code>bin\winws.exe</code>, WinDivert и антивирус. |
-| Обнаружена служба Zapret | Остановите её через Flowseal. NetPilot не вмешивается в стороннюю службу. |
+| Обнаружена внешняя служба Zapret | Откройте **Подробности** для полной остановки либо подтвердите передачу выбранной стратегии службе NetPilot. |
 | WinError 10013 | Проверьте брандмауэр, антивирус, прокси и сетевые разрешения. |
 | Telegram не подключился | Подтвердите <code>tg://proxy</code> или добавьте <code>127.0.0.1:1443</code> вручную. |
 | Порт 1443 занят | Закройте старый <code>TgWsProxy_windows.exe</code> через его приложение. |
@@ -210,6 +225,7 @@ tests/               модульные и offscreen UI-тесты
 ## Ограничения RC
 
 - Драйверы, установщик, WARP и UAC требуют проверки на реальной Windows.
+- Автоматическое фоновое восстановление внешних служб не выполняется: восстановление запускается пользователем и проверяется после UAC.
 - Подбор стратегии создаёт много HTTPS-запросов и может занимать несколько минут.
 - Полное управление всеми параметрами upstream <code>service.bat</code> пока не реализовано.
 - NetPilot не связан с Flowseal или Cloudflare.
@@ -234,7 +250,7 @@ NetPilot combines three network tools in one compact tray application:
 - **Telegram Proxy** — a bundled console proxy without another tray icon.
 - **Cloudflare WARP** — official client installation and <code>warp-cli</code> control.
 
-NetPilot manages only its own processes and services. Native Windows UAC prompts remain visible.
+NetPilot reports its own and confirmed external Zapret instances separately. External processes, services and tasks are changed only after explicit consent, and native Windows UAC prompts remain visible.
 
 ## Interface
 
@@ -246,10 +262,11 @@ NetPilot manages only its own processes and services. Native Windows UAC prompts
 
 ## How it works
 
-1. NetPilot checks installed components and reports their state in the main window and tray.
+1. NetPilot checks installed components plus Zapret processes, services and scheduled tasks in the background, then reports the factual state in the main window and tray.
 2. Zapret can run a selected strategy immediately or compare available configurations by HTTPS reachability and latency.
 3. The best strategy is applied automatically; Telegram Proxy and WARP remain independently controlled.
-4. If testing is cancelled or fails, NetPilot attempts to restore the previous strategy that it managed.
+4. After a successful manual comparison, NetPilot offers Windows startup for the selected strategy; automatic checks never show this offer or trigger UAC.
+5. If testing is cancelled or fails, NetPilot attempts to restore the previous strategy that it managed.
 
 Every system-level action — installing a driver, WARP or the Zapret service — requires a visible UAC prompt.
 
@@ -259,9 +276,10 @@ Every system-level action — installing a driver, WARP or the Zapret service �
 
 - Downloads the official [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube) release.
 - Starts the selected <code>general*.bat</code> without another console window.
-- Tracks only its own PIDs and never terminates an unrelated <code>winws.exe</code>.
-- Can install the selected strategy as an automatically started Windows service.
-- Removes only a service explicitly created by NetPilot.
+- Distinguishes managed, external, multiple and partially stopped Zapret from paths, arguments and installation structure; the name <code>winws.exe</code> alone is never enough.
+- Can stop every confirmed Zapret instance without deleting external files or shared drivers.
+- Transfers the selected strategy to the NetPilot service transactionally: it saves replaced configuration, revalidates after UAC and rolls back on failure.
+- Ordinary service removal still affects only a service owned by NetPilot.
 - Preserves custom lists and active fake files during updates.
 
 ### Strategy selection
@@ -270,6 +288,7 @@ Every system-level action — installing a driver, WARP or the Zapret service �
 - Checks HTTPS with system curl using HTTP/1.1, TLS 1.2 and TLS 1.3 where available.
 - Prioritizes reachable targets, then latency.
 - Automatically applies the winning strategy.
+- Offers Windows startup for a successful manual winner once per app session.
 - Runs a lightweight eight-address health sample every 15 minutes without restarting Zapret.
 - After two failed samples, automatically compares strategies when Zapret is owned by NetPilot, the app is already elevated, and neither a conflicting service nor WARP is active.
 - Attempts to restore the previous managed strategy after failure or cancellation.
@@ -299,6 +318,7 @@ Component rollback is separate from strategy rollback. During an update, NetPilo
 - Left click opens the compact notification-area flyout.
 - The context menu provides quick actions and strategy testing.
 - The icon reflects current state: gray means idle, green means connected, amber means an operation is running, and red requires attention.
+- Vector icons and toggles animate only during a real state transition; minimizing or restoring the window never touches network processes.
 - Three dots below the mark show the number of active components; exact states are available in the tooltip and context menu.
 - Starting NetPilot and starting Zapret with Windows are separate settings.
 - Tray startup and automatic component updates are supported.
@@ -341,8 +361,9 @@ The switch installs the selected strategy as an <code>AUTO_START</code> service.
 
 - UAC is requested when the service is created or removed.
 - The service starts independently of the NetPilot window.
-- NetPilot records ownership and does not replace a Flowseal or third-party service.
-- External services remain manageable through the original <code>service.bat</code>.
+- When external Zapret is present, NetPilot explains the transfer first, stops only confirmed objects and saves original startup settings for separate restoration.
+- A conflicting service named <code>zapret</code> is replaced only inside the confirmed transaction. Other external services and tasks are not deleted; their startup is disabled reversibly.
+- If transfer fails, NetPilot attempts to restore the exact saved configuration and verifies the result. Windows state that cannot be verified is never reported as restored.
 
 Verify:
 
@@ -352,6 +373,16 @@ sc.exe qc zapret
 ~~~
 
 Expected properties include <code>RUNNING</code>, <code>AUTO_START</code>, the <code>winws.exe</code> path and strategy arguments.
+
+## Stopping all Zapret instances
+
+**Stop all Zapret** is visible only while confirmed activity exists:
+
+- **Stop now** stops confirmed services, tasks and processes without changing startup settings.
+- **Stop and disable automatic restart** saves current service/task modes first, disables restart and then stops Zapret.
+- **Restore external Zapret startup** remains available in Settings while saved entries still require verified restoration.
+
+Ambiguous processes are never stopped automatically. Cancelling UAC changes nothing. If another app removes or reconfigures a service, or its account cannot be restored safely, NetPilot retains the recovery record for manual review instead of claiming success.
 
 ## Security and local data
 
@@ -368,7 +399,7 @@ Expected properties include <code>RUNNING</code>, <code>AUTO_START</code>, the <
 | Problem | What to check |
 |---|---|
 | Zapret does not start | Accept UAC. Check <code>bin\winws.exe</code>, WinDivert and antivirus blocks. |
-| A Zapret service was detected | Stop it through Flowseal. NetPilot does not take over external services. |
+| An external Zapret service was detected | Open **Details** to stop all confirmed instances or explicitly transfer the selected strategy to NetPilot. |
 | WinError 10013 | Check firewall, antivirus, proxy and network permissions. |
 | Telegram did not connect | Confirm <code>tg://proxy</code> or add <code>127.0.0.1:1443</code> manually. |
 | Port 1443 is occupied | Close the older <code>TgWsProxy_windows.exe</code> through its own app. |
@@ -414,6 +445,7 @@ tests/               unit and offscreen UI tests
 ## Release-candidate limitations
 
 - Drivers, installer behavior, WARP and UAC require real Windows testing.
+- External services are never restored silently in the background; restoration is user-initiated and verified after UAC.
 - Strategy comparison can issue many HTTPS requests and may take several minutes.
 - Full management of every upstream <code>service.bat</code> option is not implemented.
 - NetPilot is not affiliated with Flowseal or Cloudflare.

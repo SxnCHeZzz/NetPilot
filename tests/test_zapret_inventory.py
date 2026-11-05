@@ -154,10 +154,20 @@ class TestZapretInventory(unittest.TestCase):
 
     def test_adapter_invalid_json_warns_without_losing_processes(self):
         from zapret_inventory import PsutilWindowsInventoryAdapter
-        with patch('psutil.process_iter', return_value=iter(())), \
+
+        process = types.SimpleNamespace(
+            pid=11,
+            name=lambda: 'winws.exe',
+            exe=lambda: ROOT + r'\bin\winws.exe',
+            cmdline=lambda: (ROOT + r'\bin\winws.exe', '--wf-tcp=443'),
+            create_time=lambda: 1.0,
+        )
+        with patch('psutil.process_iter', return_value=iter((process,))), \
              patch('zapret_inventory.subprocess.run', return_value=types.SimpleNamespace(
                  stdout='not JSON', stderr='', returncode=0)):
             snapshot = build_snapshot(PsutilWindowsInventoryAdapter(), (ROOT,))
+        self.assertEqual(snapshot.active_count, 1)
+        self.assertEqual(snapshot.active[0].process.pid, 11)
         self.assertEqual(len(snapshot.warnings), 2)
 
     def test_adapter_retains_successful_rows_alongside_command_failure(self):

@@ -21,6 +21,11 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Build UI app
         run: python -m PyInstaller --clean --noconfirm --onedir --windowed --name NetPilot --icon assets\netpilot.ico --add-data "assets;assets" --collect-all proxy --collect-all utils --paths src src\app.py
+      - name: Packaged UI smoke test
+        env:
+          QT_QPA_PLATFORM: offscreen
+          NETPILOT_REDUCED_MOTION: '1'
+        run: dist\NetPilot\NetPilot.exe --smoke-test
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
       - name: Installer
@@ -58,6 +63,8 @@ jobs:
             - Compact 324 × 414 interface with single-action component cards.
             - Automatic Zapret health monitoring and safe strategy selection.
             - Dynamic tray icon and separate Windows startup controls.
+            - Verified external Zapret discovery, full stop, reversible startup disable and transactional service transfer.
+            - Original vector state icons and smooth minimize/restore motion.
             - Clear Telegram Proxy and WARP controls without duplicate actions.
             - Improved component installer, rollback guidance and Russian/English documentation.
           files: |

@@ -44,6 +44,25 @@ class InterfaceSmoke(unittest.TestCase):
                 window.status_timer.stop()
                 window.daily_timer.stop()
                 window.auto_strategy_timer.stop()
+                window.message_timer.stop()
+                window.window_transition.finish_immediately()
                 window.tray.hide()
                 window.hide()
                 window.pool.shutdown(wait=False,cancel_futures=True)
+                window.deleteLater();self.qapp.processEvents()
+
+    def test_packaged_smoke_is_local_and_exits_cleanly(self):
+        with patch.object(ui,'find_overflow_rect',return_value=None), \
+             patch.object(managed,'service_state',side_effect=AssertionError('no system inventory')), \
+             patch.object(managed,'warp_cli',side_effect=AssertionError('no WARP lookup')):
+            window=ui.NetPilot(smoke_mode=True)
+            try:
+                self.assertEqual(ui.run_packaged_smoke(self.qapp,window),0)
+                self.assertEqual(window.pages.count(),3)
+                self.assertTrue(window.isVisible())
+                self.assertEqual(window.size().toTuple(),(324,414))
+            finally:
+                window.window_transition.finish_immediately()
+                window.tray.hide();window.hide()
+                window.pool.shutdown(wait=False,cancel_futures=True)
+                window.deleteLater();self.qapp.processEvents()

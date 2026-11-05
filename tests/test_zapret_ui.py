@@ -2,6 +2,7 @@
 import os
 import sys
 import unittest
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -113,6 +114,17 @@ class ZapretUiTests(unittest.TestCase):
              patch.object(self.window, 'begin_privileged_operation') as begin:
             self.window.request_zapret_transfer('general (ALT4).bat')
             begin.assert_called_once_with('transfer', 'general (ALT4).bat')
+
+    def test_uac_cancellation_removes_unused_one_shot_request(self):
+        self.window.apply_zapret_snapshot(ZapretSnapshot((process(450),)))
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]) as folder, \
+             patch.object(ui.m,'ROOT',Path(folder)), \
+             patch.object(ui,'elevate_request',return_value=False), \
+             patch.object(ui,'write_request',wraps=ui.write_request) as write:
+            self.assertFalse(self.window.begin_privileged_operation('stop_all'))
+            write.assert_called_once()
+            self.assertEqual(list((Path(folder)/'privileged').glob('request-*.json')),[])
+            self.assertIsNone(self.window._zapret_operation)
 
     def test_restore_action_is_conditional_on_pending_backup(self):
         button = self.window.restore_autostart_button

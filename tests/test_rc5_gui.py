@@ -1,6 +1,7 @@
 """Offscreen regression tests for the RC5 setup and settings UI."""
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -140,10 +141,16 @@ class SetupAndPreferences(unittest.TestCase):
         with patch.object(managed,'service_state',return_value='RUNNING'), \
              patch.object(managed,'zapret_service_owned',return_value=False):
             self.window.refresh_service_setting()
-        self.assertTrue(self.window.zapret_service_toggle.isChecked())
+        self.assertFalse(self.window.zapret_service_toggle.isChecked())
         self.assertTrue(self.window.zapret_service_toggle.isEnabled())
         self.assertEqual(self.window.service_badge.text(),'СЛУЖБА FLOWSEAL')
         self.assertIn('передать',self.window.zapret_service_toggle.toolTip().lower())
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(managed,'sub_dir',return_value=Path(folder)), \
+             patch.object(managed,'list_strategies',return_value=['general.bat']), \
+             patch.object(self.window,'request_zapret_transfer') as transfer:
+            self.window.change_zapret_autostart(True)
+        transfer.assert_called_once()
 
     def test_wizard_starts_both_installs_when_selected(self):
         class DummySetup:

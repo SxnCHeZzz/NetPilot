@@ -542,9 +542,10 @@ class ExpertDialog(QFrame):
 
 
 class NetPilot(QMainWindow):
-    def __init__(self):
+    def __init__(self, smoke_mode=False):
         super().__init__()
-        self.cfg = m.read_cfg()
+        self.smoke_mode=bool(smoke_mode)
+        self.cfg = dict(m.DEFAULT,installed={}) if self.smoke_mode else m.read_cfg()
         self.bus = Bus(); self.bus.done.connect(self.completed); self.bus.progress.connect(self.progress_update)
         self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='NetPilotWorker')
         self.running = set(); self.test_running = False; self.cancel = threading.Event()
@@ -591,16 +592,15 @@ class NetPilot(QMainWindow):
         self.tray.setToolTip('NetPilot · ожидание')
         self.tray.show()
         self.status_timer = QTimer(self); self.status_timer.timeout.connect(self.refresh)
-        self.status_timer.start(15000)
         self.daily_timer=QTimer(self);self.daily_timer.timeout.connect(lambda:self.check_updates(False))
-        self.daily_timer.start(6*60*60*1000)
         self.auto_strategy_timer=QTimer(self);self.auto_strategy_timer.timeout.connect(self.auto_strategy_check)
-        self.auto_strategy_timer.start(15*60*1000)
-        self.refresh()
-        self.refresh_zapret_inventory()
-        QTimer.singleShot(500, self.on_first_run)
-        if self.cfg.get('auto_check',True): QTimer.singleShot(1500, self.check_updates)
-        if self.cfg.get('auto_strategy',True): QTimer.singleShot(12000, self.auto_strategy_check)
+        if not self.smoke_mode:
+            self.status_timer.start(15000);self.daily_timer.start(6*60*60*1000)
+            self.auto_strategy_timer.start(15*60*1000)
+            self.refresh();self.refresh_zapret_inventory()
+            QTimer.singleShot(500, self.on_first_run)
+            if self.cfg.get('auto_check',True): QTimer.singleShot(1500, self.check_updates)
+            if self.cfg.get('auto_strategy',True): QTimer.singleShot(12000, self.auto_strategy_check)
 
     def _build(self):
         root = QWidget(objectName='root'); self.setCentralWidget(root)
@@ -700,7 +700,7 @@ class NetPilot(QMainWindow):
             wrap.addStretch()
             if key=='zapret':
                 service=QHBoxLayout();service.setSpacing(9);wrap.addLayout(service)
-                self.detail_service_toggle=Toggle(m.service_state('zapret')!='not_installed')
+                self.detail_service_toggle=Toggle(False if self.smoke_mode else m.service_state('zapret')!='not_installed')
                 self.detail_service_toggle.toggled.connect(self.change_zapret_autostart);service.addWidget(self.detail_service_toggle)
                 label=QLabel('Запускать вместе с Windows');label.setWordWrap(True);service.addWidget(label,1)
                 action=QPushButton('Подобрать лучшую стратегию  ›');action.setObjectName('link');action.clicked.connect(self.start_test);wrap.addWidget(action)
@@ -755,7 +755,7 @@ class NetPilot(QMainWindow):
         self.autostart_toggle,_=self._setting_row(
             self.prefs,'NetPilot вместе с Windows',self.autostart_enabled(),self.change_autostart,
             'Открывает приложение в трее после входа в систему')
-        service_present=m.service_state('zapret')!='not_installed'
+        service_present=False if self.smoke_mode else m.service_state('zapret')!='not_installed'
         self.zapret_service_toggle,self.zapret_service_row=self._setting_row(
             self.prefs,'Zapret вместе с Windows',service_present,self.change_zapret_autostart,
             'Системная служба · выбранная стратегия запускается до входа в аккаунт')
@@ -944,11 +944,13 @@ class NetPilot(QMainWindow):
         request_id=str(uuid.uuid4())
         request=PrivilegedRequest(request_id,operation,time.time(),
                                   snapshot_digest(self.zapret_snapshot),strategy)
+        request_path=None
         try:
-            write_request(m.ROOT/'privileged',request)
+            request_path=write_request(m.ROOT/'privileged',request)
             if not elevate_request(request_id):
                 raise RuntimeError('Windows не запустила подтверждение UAC')
         except Exception as exc:
+            if request_path is not None:request_path.unlink(missing_ok=True)
             self.note(str(exc),True);return False
         self._zapret_operation_generation+=1
         generation=self._zapret_operation_generation
@@ -995,6 +997,7 @@ class NetPilot(QMainWindow):
     def refresh_restore_autostart_action(self):
         button=getattr(self,'restore_autostart_button',None)
         if button is None:return
+        if self.smoke_mode:button.hide();return
         try:
             backup=load_backup()
             visible=bool(backup and (backup.services or backup.tasks))
@@ -1076,15 +1079,17 @@ class NetPilot(QMainWindow):
 
     def refresh_service_setting(self):
         if not hasattr(self,'zapret_service_toggle'):return
-        state=m.service_state('zapret');present=state!='not_installed';owned=m.zapret_service_owned()
-        self.zapret_service_toggle.blockSignals(True);self.zapret_service_toggle.setChecked(present)
+        if self.smoke_mode:state='not_installed';present=False;owned=False
+        else:state=m.service_state('zapret');present=state!='not_installed';owned=m.zapret_service_owned()
+        self.zapret_service_toggle.blockSignals(True);self.zapret_service_toggle.setChecked(present and owned)
         self.zapret_service_toggle.blockSignals(False)
         if hasattr(self,'detail_service_toggle'):
             self.detail_service_toggle.blockSignals(True);self.detail_service_toggle.setChecked(present and owned)
             self.detail_service_toggle.blockSignals(False)
             self.detail_service_toggle.setEnabled(self._zapret_operation is None)
         if hasattr(self,'detail_facts'):
-            self.detail_facts['zapret']['Запуск сервиса'].setText('Включён' if present else 'Выключен')
+            self.detail_facts['zapret']['Запуск сервиса'].setText(
+                'Включён' if present and owned else 'Внешний' if present else 'Выключен')
         if present and owned:
             strategy=m.zapret_service_strategy() or 'выбранная стратегия'
             self.service_badge.setText('АВТО · '+strategy.replace('general','').strip(' ()') or 'GENERAL')
@@ -1659,10 +1664,38 @@ class NetPilot(QMainWindow):
         QApplication.instance().quit()
 
 
+def run_packaged_smoke(application, window):
+    """Exercise packaged UI surfaces without reading or mutating system state."""
+    if not window.smoke_mode:
+        raise ValueError('packaged smoke requires an isolated NetPilot window')
+    window.window_transition.reduced_motion=True
+    window.show_panel();application.processEvents()
+    if window.size().toTuple()!=(324,414) or not window.tray.isVisible():
+        raise RuntimeError('compact window or single tray surface was not created')
+    window.open_details();window.select_detail(0);application.processEvents()
+    for icon,_label in window.detail_status_labels.values():
+        if icon.render_pixmap(24,1.0).isNull():
+            raise RuntimeError('vector icon did not render')
+    window.show_page(2);application.processEvents()
+    window.hide_to_tray();application.processEvents()
+    if window.isVisible():raise RuntimeError('window did not minimize to tray')
+    window.show_panel();application.processEvents()
+    if not window.isVisible():raise RuntimeError('window did not restore from tray')
+    return 0
+
+
 def main():
     app=QApplication(sys.argv)
     app.setApplicationName('NetPilot');app.setQuitOnLastWindowClosed(False);app.setWindowIcon(app_icon());app.setStyleSheet(CSS)
-    window=NetPilot()
+    smoke='--smoke-test' in sys.argv
+    window=NetPilot(smoke_mode=smoke)
+    if smoke:
+        try:return run_packaged_smoke(app,window)
+        except Exception:return 3
+        finally:
+            window.window_transition.finish_immediately()
+            window.tray.hide();window.hide();window.pool.shutdown(wait=False,cancel_futures=True)
+            window.deleteLater();app.processEvents()
     if '--tray' not in sys.argv and not ('--elevated' in sys.argv and window.cfg.get('start_hidden')):
         window.show_panel()
     if '--test' in sys.argv:QTimer.singleShot(1100,window.start_test)
