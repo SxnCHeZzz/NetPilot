@@ -56,6 +56,19 @@ class ToggleTests(unittest.TestCase):
         self.assertEqual(toggle.accessibleName(),'Переключатель')
         self.assertEqual(toggle.size().toTuple(),(47,26))
 
+    def test_pending_indicator_animates_until_backend_confirms(self):
+        toggle=AnimatedToggle(False);toggle.show();toggle.click()
+        QTest.qWait(55)
+        self.assertTrue(toggle.pending)
+        self.assertTrue(hasattr(toggle,'is_busy_animating'),'pending animation API is missing')
+        self.assertTrue(hasattr(toggle,'pending_phase'),'pending phase is missing')
+        self.assertTrue(toggle.is_busy_animating())
+        self.assertGreater(toggle.pending_phase,0.0)
+        toggle.set_confirmed(True,MotionState.SUCCESS)
+        QTest.qWait(25)
+        self.assertFalse(toggle.pending)
+        self.assertFalse(toggle.is_busy_animating())
+
 
 @unittest.skipUnless(HAVE_QT, 'PySide6 needed for motion tests')
 class WindowTransitionTests(unittest.TestCase):

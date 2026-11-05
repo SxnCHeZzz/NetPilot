@@ -9,6 +9,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
 try:
+    from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
     HAVE_QT = True
@@ -17,6 +18,7 @@ except ImportError:
 
 if HAVE_QT:
     from ui_icons import AnimatedIcon, IconKind, IconState
+    import ui_icons
     import app as ui
     import managed
     from zapret_inventory import ProcessRecord, ZapretItem, ZapretSnapshot
@@ -58,6 +60,17 @@ class IconRenderTests(unittest.TestCase):
         enabled = alpha_signature(icon.render_pixmap(32, 1.0))
         self.assertEqual(starting, disabled)
         self.assertNotEqual(enabled, disabled)
+
+    def test_service_identity_and_action_icons_are_distinct_vectors(self):
+        required=('TELEGRAM','COMPONENTS','WARNING','ACTIVITY','LAYERS','WINDOWS')
+        for name in required:
+            self.assertTrue(hasattr(IconKind,name),f'missing original {name.lower()} icon')
+        signatures=[]
+        for name in required:
+            icon=AnimatedIcon(getattr(IconKind,name),32)
+            icon.set_state(IconState.ENABLED,animate=False)
+            signatures.append(alpha_signature(icon.render_pixmap(32,2.0)))
+        self.assertEqual(len(set(signatures)),len(required))
 
 
 @unittest.skipUnless(HAVE_QT, 'PySide6 needed for icon tests')
@@ -107,6 +120,29 @@ class IconAnimationTests(unittest.TestCase):
         QTest.qWait(280)
         self.assertEqual(icon.state, IconState.ERROR)
         self.assertFalse(icon.is_animating())
+
+    def test_active_warp_pulse_and_hidden_widget_stops_all_motion(self):
+        icon=AnimatedIcon(IconKind.CLOUD)
+        icon.show();icon.set_state(IconState.ENABLED)
+        QTest.qWait(40)
+        self.assertTrue(icon.is_animating())
+        self.assertTrue(hasattr(icon,'motion_progress'),'public motion progress is missing')
+        self.assertGreater(icon.motion_progress,0.0)
+        icon.hide();self.app.processEvents()
+        self.assertFalse(icon.is_animating())
+
+    def test_premium_icon_button_animates_hover_and_press(self):
+        button_type=getattr(ui_icons,'PremiumIconButton',None)
+        self.assertIsNotNone(button_type,'premium icon button is missing')
+        button=button_type(IconKind.BACK,'Назад')
+        button.show();self.app.processEvents()
+        QTest.mouseMove(button,button.rect().center());QTest.qWait(160)
+        self.assertGreater(button.hover_progress,.8)
+        QTest.mousePress(button,Qt.MouseButton.LeftButton,pos=button.rect().center())
+        QTest.qWait(45)
+        self.assertGreater(button.press_progress,.1)
+        QTest.mouseRelease(button,Qt.MouseButton.LeftButton,pos=button.rect().center())
+        button.hide();button.deleteLater()
 
 
 @unittest.skipUnless(HAVE_QT, 'PySide6 needed for icon tests')
