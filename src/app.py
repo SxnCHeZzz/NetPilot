@@ -39,7 +39,7 @@ if '--privileged-request' in sys.argv:
     raise SystemExit(privileged_cli_main(request_id))
 
 from PySide6.QtCore import Qt, QObject, Signal, QTimer, QPointF, QEventLoop, QEvent
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QBrush, QCursor, QPolygonF, QPainterPath, QDesktopServices, QPixmap
+from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QBrush, QCursor, QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QDialog, QWidget, QFrame, QHBoxLayout,
     QVBoxLayout, QLabel, QPushButton, QProgressBar, QScrollArea, QComboBox,
@@ -56,6 +56,7 @@ from privileged import (PrivilegedRequest, elevate_request, read_response,
 from windows_zapret import WindowsZapretAdapter
 from zapret_control import StopMode, load_backup
 from zapret_inventory import ZapretSnapshot
+from ui_icons import AnimatedIcon, IconKind, IconState
 
 VERSION = '0.5.4-rc6'
 ACCENT = '#66E3A4'
@@ -271,12 +272,30 @@ class HeaderAction(QPushButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip({'back':'Назад', 'settings':'Настройки', 'minimize':'Свернуть в трей'}[kind])
         self.setAccessibleName(self.toolTip())
+        self.icon_view=AnimatedIcon({'back':IconKind.BACK,'settings':IconKind.GEAR,
+                                     'minimize':IconKind.MINIMIZE}[kind],24,self)
+        self.icon_view.setGeometry(6,6,24,24)
+        self.icon_view.set_state(IconState.ENABLED,animate=False)
 
     def set_kind(self, kind):
         self.kind = kind
         self.setToolTip({'back':'Назад', 'settings':'Настройки', 'minimize':'Свернуть в трей'}[kind])
         self.setAccessibleName(self.toolTip())
-        self.update()
+        self.icon_view.kind={'back':IconKind.BACK,'settings':IconKind.GEAR,
+                             'minimize':IconKind.MINIMIZE}[kind]
+        self.icon_view.update();self.update()
+
+    def enterEvent(self,event):
+        self.icon_view.set_interaction(True,False);super().enterEvent(event)
+
+    def leaveEvent(self,event):
+        self.icon_view.set_interaction(False,False);super().leaveEvent(event)
+
+    def mousePressEvent(self,event):
+        self.icon_view.set_interaction(True,True);super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self,event):
+        self.icon_view.set_interaction(self.underMouse(),False);super().mouseReleaseEvent(event)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -284,81 +303,7 @@ class HeaderAction(QPushButton):
         p.setPen(QPen(QColor('#557064') if self.underMouse() else QColor('#303A40'), 1))
         p.setBrush(QColor('#24312C') if self.underMouse() else QColor('#1C2328'))
         p.drawRoundedRect(1, 1, self.width()-2, self.height()-2, 11, 11)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        pen = QPen(QColor(ACCENT_BRIGHT) if self.underMouse() else QColor('#F2F6F4'), 2.3)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        p.setPen(pen)
-        if self.kind == 'back':
-            p.drawLine(21, 11, 14, 18)
-            p.drawLine(14, 18, 21, 25)
-            p.drawLine(14, 18, 24, 18)
-        elif self.kind == 'minimize':
-            p.drawLine(12, 19, 24, 19)
-        elif self.kind == 'settings':
-            from math import sin, cos, pi
-            # Compact gear ring with 8 teeth, all drawn with a single pen.
-            p.drawEllipse(QPointF(18, 18), 5.2, 5.2)
-            p.drawEllipse(QPointF(18, 18), 1.3, 1.3)
-            for i in range(8):
-                a = i*pi/4
-                p.drawLine(QPointF(18+7*cos(a),18+7*sin(a)),
-                           QPointF(18+9*cos(a),18+9*sin(a)))
         p.end()
-
-
-class ServiceGlyph(QWidget):
-    """Small vector glyphs — no platform-dependent emoji or font substitutions."""
-    def __init__(self, kind, parent=None):
-        super().__init__(parent)
-        self.kind=kind
-        self.setFixedSize(25,25)
-        self.setAccessibleName({'zapret':'Zapret','telegram':'Telegram','warp':'WARP'}[kind])
-
-    def paintEvent(self,event):
-        p=QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(QPen(QColor(ACCENT),1.7))
-        if self.kind=='telegram':
-            points=QPolygonF([QPointF(3,12),QPointF(22,3),QPointF(17,21),QPointF(12,15),QPointF(9,19),QPointF(9,14)])
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawPolygon(points)
-            p.drawLine(QPointF(9,14),QPointF(22,3))
-        elif self.kind=='warp':
-            path=QPainterPath()
-            path.moveTo(7,19)
-            path.cubicTo(1,19,1,11,7,10)
-            path.cubicTo(7,3,17,2,19,10)
-            path.cubicTo(26,10,25,19,19,19)
-            path.closeSubpath()
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawPath(path)
-        else:
-            path=QPainterPath()
-            path.moveTo(12.5,2);path.lineTo(22,12.5);path.lineTo(12.5,23);path.lineTo(3,12.5);path.closeSubpath()
-            p.drawPath(path)
-            p.drawEllipse(QPointF(12.5,12.5),2.7,2.7)
-        p.end()
-
-
-class StatusDot(QWidget):
-    """Small semantic state marker shared by overview and detail views."""
-    def __init__(self, active=False, parent=None):
-        super().__init__(parent)
-        self.active = active
-        self.setFixedSize(12, 12)
-
-    def set_active(self, active):
-        self.active = bool(active)
-        self.update()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(ACCENT if self.active else '#56615D'))
-        painter.drawEllipse(2, 2, 8, 8)
-        painter.end()
 
 
 class StatusOrb(QWidget):
@@ -393,12 +338,13 @@ class StatusOrb(QWidget):
 
 
 class SummaryItem(QWidget):
-    def __init__(self, name, parent=None):
+    def __init__(self, name, kind, parent=None):
         super().__init__(parent)
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(7)
-        self.dot = StatusDot(False)
+        self.dot = AnimatedIcon({'zapret':IconKind.LOCK,'telegram':IconKind.NETWORK,
+                                 'warp':IconKind.CLOUD}[kind],20)
         row.addWidget(self.dot, 0, Qt.AlignmentFlag.AlignTop)
         text = QVBoxLayout(); text.setSpacing(1); row.addLayout(text)
         label = QLabel(name); label.setObjectName('componentName'); text.addWidget(label)
@@ -407,6 +353,9 @@ class SummaryItem(QWidget):
     def set_state(self, active, label):
         self.dot.set_active(active)
         self.status.setText(label)
+
+    def set_icon_state(self,state):
+        self.dot.set_state(state)
 
 
 def status_icon(active_count=0, busy=False, error=False):
@@ -715,7 +664,7 @@ class NetPilot(QMainWindow):
         services=QHBoxLayout();services.setSpacing(10);content.addLayout(services)
         self.home_summaries={}
         for index,(key,title) in enumerate((('zapret','Zapret'),('telegram','Telegram'),('warp','WARP'))):
-            item=SummaryItem(title);self.home_summaries[key]=item;services.addWidget(item,1)
+            item=SummaryItem(title,key);self.home_summaries[key]=item;services.addWidget(item,1)
             if index<2:
                 divider=QFrame(objectName='separator');divider.setFixedHeight(42);services.addWidget(divider)
         self.details_button=QPushButton('Подробности  ›');self.details_button.setObjectName('details')
@@ -753,7 +702,8 @@ class NetPilot(QMainWindow):
             panel=QFrame(objectName='detailPanel');self.detail_stack.addWidget(panel)
             wrap=QVBoxLayout(panel);wrap.setContentsMargins(12,8,12,8);wrap.setSpacing(4)
             head=QHBoxLayout();wrap.addLayout(head)
-            dot=StatusDot();head.addWidget(dot)
+            dot=AnimatedIcon({'zapret':IconKind.LOCK,'telegram':IconKind.NETWORK,
+                              'warp':IconKind.CLOUD}[key],24);head.addWidget(dot)
             names=QVBoxLayout();names.setSpacing(0);head.addLayout(names,1)
             name=QLabel(title);name.setObjectName('detailName');names.addWidget(name)
             state=QLabel('Готов');state.setObjectName('muted');names.addWidget(state)
@@ -920,8 +870,13 @@ class NetPilot(QMainWindow):
         self.zapret_semantic_state=semantic
         self._zapret_own_active=bool(own_active)
         self._component_states['zapret']=(bool(any_active),label)
-        dot,status=self.detail_status_labels['zapret'];dot.set_active(bool(any_active));status.setText(label)
+        icon_state={'disabled':IconState.DISABLED,'managed':IconState.ENABLED,
+                    'external':IconState.EXTERNAL,'multiple':IconState.PARTIAL,
+                    'partial':IconState.PARTIAL,'error':IconState.ERROR,
+                    'starting':IconState.STARTING,'stopping':IconState.STOPPING}.get(semantic,IconState.DISABLED)
+        dot,status=self.detail_status_labels['zapret'];dot.set_state(icon_state);status.setText(label)
         self.home_summaries['zapret'].set_state(bool(any_active),label)
+        self.home_summaries['zapret'].set_icon_state(icon_state)
         selected=self.detail_tabs['zapret'].isChecked()
         self.detail_tabs['zapret'].setText('Zapret\n'+('Выбран' if selected else label))
         self.stop_all_zapret_button.setVisible(bool(any_active))
@@ -943,9 +898,10 @@ class NetPilot(QMainWindow):
 
     def apply_zapret_inventory_error(self, error):
         self.zapret_semantic_state='error'
-        dot,status=self.detail_status_labels['zapret'];dot.set_active(False)
+        dot,status=self.detail_status_labels['zapret'];dot.set_state(IconState.ERROR)
         status.setText('Не удалось проверить Zapret');status.setToolTip(str(error))
         self.home_summaries['zapret'].set_state(False,'Проверка недоступна')
+        self.home_summaries['zapret'].set_icon_state(IconState.ERROR)
         self._component_states['zapret']=(False,'Проверка недоступна')
         self._update_tray()
 
