@@ -160,6 +160,44 @@ class TestZapretInventory(unittest.TestCase):
             snapshot = build_snapshot(PsutilWindowsInventoryAdapter(), (ROOT,))
         self.assertEqual(len(snapshot.warnings), 2)
 
+    def test_adapter_retains_successful_rows_alongside_command_failure(self):
+        from zapret_inventory import PsutilWindowsInventoryAdapter
+        command = '"' + ROOT + r'\bin\winws.exe"'
+
+        def run(args, **kwargs):
+            if 'Win32_Service' in args[-1]:
+                rows = [{'Name': 'good service', 'PathName': command, 'State': 'Running', 'ProcessId': 11}]
+            else:
+                rows = [{'Name': r'\Good task', 'Command': command, 'State': 'Running'}]
+            return types.SimpleNamespace(stdout=json.dumps(rows), stderr='Access is denied for another object', returncode=1)
+
+        with patch('psutil.process_iter', return_value=iter(())), \
+             patch('zapret_inventory.subprocess.run', side_effect=run):
+            snapshot = build_snapshot(PsutilWindowsInventoryAdapter(), (ROOT,))
+        self.assertEqual({item.kind for item in snapshot.active}, {'service', 'task'})
+        self.assertEqual(snapshot.active_count, 2)
+        self.assertEqual(len(snapshot.warnings), 2)
+        self.assertTrue(all('Access is denied' in warning for warning in snapshot.warnings))
+
+    def test_adapter_retains_rows_and_per_object_errors_from_query_envelope(self):
+        from zapret_inventory import PsutilWindowsInventoryAdapter
+        command = '"' + ROOT + r'\bin\winws.exe"'
+
+        def run(args, **kwargs):
+            if 'Win32_Service' in args[-1]:
+                rows = [{'Name': 'good service', 'PathName': command, 'State': 'Running', 'ProcessId': 11}]
+            else:
+                rows = [{'Name': r'\Good task', 'Command': command, 'State': 'Running'}]
+            data = {'Records': rows, 'Warnings': ['Access denied: restricted object']}
+            return types.SimpleNamespace(stdout=json.dumps(data), stderr='', returncode=0)
+
+        with patch('psutil.process_iter', return_value=iter(())), \
+             patch('zapret_inventory.subprocess.run', side_effect=run):
+            snapshot = build_snapshot(PsutilWindowsInventoryAdapter(), (ROOT,))
+        self.assertEqual({item.kind for item in snapshot.active}, {'service', 'task'})
+        self.assertEqual(len(snapshot.warnings), 2)
+        self.assertTrue(all('restricted object' in warning for warning in snapshot.warnings))
+
     def test_task_multiple_actions_preserve_confirmed_action(self):
         snapshot = build_snapshot(Inventory(tasks=(
             TaskRecord('multi', r'C:\Windows\System32\notepad.exe', 'running'),

@@ -213,27 +213,54 @@ class PsutilWindowsInventoryAdapter:
                     warnings.append(f'process {process.pid} layout: {type(exc).__name__}')
             yield ProcessRecord(process.pid, name, exe, tuple(cmdline), create_time, entries, tuple(warnings))
 
-    def _query(self, script: str) -> list[dict]:
-        prefix = '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $ErrorActionPreference="Stop"; '
+    def _query(self, script: str) -> tuple[list[dict], tuple[str, ...]]:
+        # Collect rows as they arrive so one inaccessible object (or even a
+        # terminating error after earlier rows) cannot erase useful discovery.
+        prefix = (
+            '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); '
+            '$ErrorActionPreference="Continue"; '
+            '$rows=[System.Collections.Generic.List[object]]::new(); '
+            '$discoveryErrors=[System.Collections.Generic.List[string]]::new(); '
+            'try { & { ')
+        suffix = (
+            ' } 2>&1 | ForEach-Object { '
+            'if ($_ -is [System.Management.Automation.ErrorRecord]) '
+            '{ $discoveryErrors.Add($_.ToString()) } else { $rows.Add($_) } } '
+            '} catch { $discoveryErrors.Add($_.ToString()) }; '
+            '[pscustomobject]@{Records=@($rows.ToArray()); Warnings=@($discoveryErrors.ToArray())} '
+            '| ConvertTo-Json -Depth 4 -Compress')
         result = subprocess.run(
-            ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', prefix + script],
+            ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', prefix + script + suffix],
             capture_output=True, text=True, encoding='utf-8', errors='replace',
             timeout=self.timeout, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-        if result.returncode:
-            raise RuntimeError(result.stderr.strip() or f'query exited {result.returncode}')
         data = json.loads(result.stdout.strip() or '[]')
-        return [data] if isinstance(data, dict) else data or []
+        warnings = []
+        if isinstance(data, dict) and 'Records' in data:
+            rows = data['Records'] or []
+            errors = data.get('Warnings') or []
+            warnings.extend([errors] if isinstance(errors, str) else errors)
+        else:
+            rows = data
+        if result.stderr.strip():
+            warnings.append(result.stderr.strip())
+        elif result.returncode:
+            warnings.append(f'query exited {result.returncode}')
+        return ([rows] if isinstance(rows, dict) else rows or []), tuple(warnings)
 
     def iter_services(self) -> Iterable[ServiceRecord]:
-        rows = self._query('Get-CimInstance Win32_Service | Select-Object Name,PathName,State,ProcessId | ConvertTo-Json -Compress')
+        rows, warnings = self._query('Get-CimInstance Win32_Service | Select-Object Name,PathName,State,ProcessId')
         for row in rows:
             yield ServiceRecord(str(row['Name']), str(row.get('PathName') or ''),
                                 str(row.get('State') or 'unknown').casefold(), int(row.get('ProcessId') or 0) or None)
+        if warnings:
+            raise RuntimeError('; '.join(warnings))
 
     def iter_tasks(self) -> Iterable[TaskRecord]:
-        rows = self._query(
+        rows, warnings = self._query(
             'Get-ScheduledTask | ForEach-Object { $task=$_; foreach($action in $task.Actions) {'
             ' [pscustomobject]@{Name=($task.TaskPath+$task.TaskName); State=[string]$task.State;'
-            ' Command=(\'"\'+$action.Execute+\'" \'+$action.Arguments)} } } | ConvertTo-Json -Compress')
+            ' Command=(\'"\'+$action.Execute+\'" \'+$action.Arguments)} } }')
         for row in rows:
             yield TaskRecord(str(row['Name']), str(row.get('Command') or ''), str(row.get('State') or 'unknown').casefold())
+        if warnings:
+            raise RuntimeError('; '.join(warnings))
