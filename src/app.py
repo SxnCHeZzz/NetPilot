@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -50,6 +51,11 @@ import benchmark as b
 from catalog import load_catalog
 import telegram_headless as tg
 from tray_position import Rect, find_overflow_rect, physical_to_qt, centered
+from privileged import (PrivilegedRequest, elevate_request, read_response,
+                        snapshot_digest, write_request)
+from windows_zapret import WindowsZapretAdapter
+from zapret_control import StopMode, load_backup
+from zapret_inventory import ZapretSnapshot
 
 VERSION = '0.5.4-rc6'
 ACCENT = '#66E3A4'
@@ -233,6 +239,27 @@ class QMessageBox:
             return (NativeMessageBox.StandardButton.Yes if owner.inline_confirm(title, message)
                     else NativeMessageBox.StandardButton.No)
         return NativeMessageBox.StandardButton.No
+
+
+class StopZapretPanel(QWidget):
+    """Compact same-window chooser for the two intentionally distinct stops."""
+    def __init__(self, own_count, external_count, parent=None):
+        super().__init__(parent)
+        self.mode = None
+        layout=QVBoxLayout(self);layout.setContentsMargins(10,10,10,10);layout.setSpacing(9)
+        title=QLabel('Остановить весь Zapret');title.setObjectName('dialogTitle');layout.addWidget(title)
+        detail=QLabel(f'Свой: {own_count} · внешний: {external_count}. Файлы не удаляются.')
+        detail.setObjectName('muted');detail.setWordWrap(True);layout.addWidget(detail)
+        temporary=QPushButton('Остановить сейчас');temporary.setObjectName('primary')
+        temporary.clicked.connect(lambda:self.choose(StopMode.TEMPORARY));layout.addWidget(temporary)
+        persistent=QPushButton('Остановить и отключить автозапуск');persistent.setObjectName('danger')
+        persistent.clicked.connect(lambda:self.choose(StopMode.DISABLE_RESTART));layout.addWidget(persistent)
+        cancel=QPushButton('Отмена');cancel.setObjectName('quiet')
+        cancel.clicked.connect(lambda:self._active_modal.finish(False));layout.addWidget(cancel)
+
+    def choose(self, mode):
+        self.mode=mode
+        self._active_modal.finish(True)
 
 
 class HeaderAction(QPushButton):
@@ -593,6 +620,13 @@ class NetPilot(QMainWindow):
         self.warp_pending = False; self.latest = {}; self.latest_test = None
         self._health_failures = 0; self.latest_auto_health = None; self._automatic_test = False
         self.suppress_toggle = False
+        self.zapret_snapshot = ZapretSnapshot()
+        self.zapret_semantic_state = 'disabled'
+        self._zapret_inventory_ready = False
+        self._zapret_generation = 0
+        self._zapret_operation_generation = 0
+        self._zapret_operation = None
+        self._prompted_strategies = set()
         self.setWindowTitle('NetPilot'); self.setWindowIcon(app_icon())
         # Small frameless flyout like Volty. The shell notification overflow is
         # measured for centering, not guessed from the cursor or screen edge.
@@ -628,6 +662,7 @@ class NetPilot(QMainWindow):
         self.auto_strategy_timer=QTimer(self);self.auto_strategy_timer.timeout.connect(self.auto_strategy_check)
         self.auto_strategy_timer.start(15*60*1000)
         self.refresh()
+        self.refresh_zapret_inventory()
         QTimer.singleShot(500, self.on_first_run)
         if self.cfg.get('auto_check',True): QTimer.singleShot(1500, self.check_updates)
         if self.cfg.get('auto_strategy',True): QTimer.singleShot(12000, self.auto_strategy_check)
@@ -650,6 +685,15 @@ class NetPilot(QMainWindow):
         self.message.setWordWrap(True); self.message.setMaximumHeight(34); self.message.setVisible(False); box.addWidget(self.message)
         self.message_timer=QTimer(self);self.message_timer.setSingleShot(True)
         self.message_timer.timeout.connect(self._hide_message)
+        self.strategy_offer_widget=QWidget();offer=QHBoxLayout(self.strategy_offer_widget)
+        offer.setContentsMargins(0,0,0,0);offer.setSpacing(6)
+        self.strategy_offer_label=QLabel('');self.strategy_offer_label.setObjectName('muted')
+        self.strategy_offer_label.setWordWrap(True);offer.addWidget(self.strategy_offer_label,1)
+        self.strategy_offer_accept=QPushButton('Включить');self.strategy_offer_accept.setObjectName('primary')
+        self.strategy_offer_accept.clicked.connect(self._accept_strategy_offer);offer.addWidget(self.strategy_offer_accept)
+        self.strategy_offer_decline=QPushButton('Не сейчас');self.strategy_offer_decline.setObjectName('quiet')
+        self.strategy_offer_decline.clicked.connect(self._decline_strategy_offer);offer.addWidget(self.strategy_offer_decline)
+        self.strategy_offer_widget.setVisible(False);box.addWidget(self.strategy_offer_widget)
 
     def _bottom_row(self, parent):
         footer=QWidget();bottom=QHBoxLayout(footer);bottom.setContentsMargins(0,0,0,0);parent.addWidget(footer)
@@ -725,6 +769,10 @@ class NetPilot(QMainWindow):
                 label=QLabel('Запускать вместе с Windows');label.setWordWrap(True);service.addWidget(label,1)
                 action=QPushButton('Подобрать лучшую стратегию  ›');action.setObjectName('link');action.clicked.connect(self.start_test);wrap.addWidget(action)
                 self.test_button=action
+                self.stop_all_zapret_button=QPushButton('Остановить весь Zapret  ›')
+                self.stop_all_zapret_button.setObjectName('danger')
+                self.stop_all_zapret_button.clicked.connect(self.show_stop_zapret_options)
+                self.stop_all_zapret_button.setVisible(False);wrap.addWidget(self.stop_all_zapret_button)
             elif key=='telegram':
                 control=QHBoxLayout();control.setSpacing(9);wrap.addLayout(control)
                 runtime=Toggle();runtime.clicked.connect(handlers[key]);control.addWidget(runtime)
@@ -793,10 +841,15 @@ class NetPilot(QMainWindow):
             ('Диагностика',self.diagnostics),
         ]:
             button=QPushButton(title);button.setObjectName('quiet');button.clicked.connect(handler);self.prefs.addWidget(button)
+        self.restore_autostart_button=QPushButton('Восстановить внешний автозапуск Zapret')
+        self.restore_autostart_button.setObjectName('quiet')
+        self.restore_autostart_button.clicked.connect(self.restore_external_autostart)
+        self.prefs.addWidget(self.restore_autostart_button)
         label=QLabel('NetPilot — неофициальное приложение. Flowseal и Cloudflare — самостоятельные проекты.');label.setWordWrap(True)
         label.setObjectName('muted');self.prefs.addWidget(label)
         self.prefs.addStretch()
         self.refresh_service_setting()
+        self.refresh_restore_autostart_action()
 
     def toggle_page(self):
         self.show_page(2 if self.pages.currentIndex()==0 else 0)
@@ -823,6 +876,7 @@ class NetPilot(QMainWindow):
 
     def note(self, message, error=False):
         full=str(message)
+        self._decline_strategy_offer()
         self.message.setText(full[:180]);self.message.setToolTip(full)
         self.message.setObjectName('error' if error else 'muted');self.message.setVisible(True)
         self.message.style().unpolish(self.message); self.message.style().polish(self.message)
@@ -834,13 +888,201 @@ class NetPilot(QMainWindow):
             QTimer.singleShot(8100, self._update_tray)
 
     def _sync_page_footer(self):
-        visible=self.message.isHidden()
+        visible=self.message.isHidden() and self.strategy_offer_widget.isHidden()
         if hasattr(self,'overview_footer'):self.overview_footer.setVisible(visible)
         if hasattr(self,'details_footer'):self.details_footer.setVisible(visible)
 
     def _hide_message(self):
         self.message.hide()
         self._sync_page_footer()
+
+    def apply_zapret_snapshot(self, snapshot, generation=None):
+        """Render only a current immutable inventory snapshot."""
+        if not isinstance(snapshot, ZapretSnapshot):
+            return self.apply_zapret_inventory_error('Некорректный результат проверки')
+        if generation is not None and generation != self._zapret_generation:
+            return
+        self.zapret_snapshot=snapshot;self._zapret_inventory_ready=True
+        own=tuple(item for item in snapshot.active if item.origin=='netpilot')
+        external=tuple(item for item in snapshot.active if item.origin!='netpilot')
+        if snapshot.active_count > 1:
+            semantic,label='multiple','Работают несколько Zapret'
+        elif own:
+            semantic,label='managed','Работает'
+        elif external:
+            semantic,label='external','Внешний Zapret работает'
+        else:
+            semantic,label='disabled','Готов'
+        self._render_zapret_state(semantic,label,bool(own),bool(snapshot.active))
+        self.refresh_restore_autostart_action()
+
+    def _render_zapret_state(self, semantic, label, own_active, any_active):
+        self.zapret_semantic_state=semantic
+        self._zapret_own_active=bool(own_active)
+        self._component_states['zapret']=(bool(any_active),label)
+        dot,status=self.detail_status_labels['zapret'];dot.set_active(bool(any_active));status.setText(label)
+        self.home_summaries['zapret'].set_state(bool(any_active),label)
+        selected=self.detail_tabs['zapret'].isChecked()
+        self.detail_tabs['zapret'].setText('Zapret\n'+('Выбран' if selected else label))
+        self.stop_all_zapret_button.setVisible(bool(any_active))
+        self.test_button.setVisible(not any_active)
+        self._set_zapret_actions_enabled(self._zapret_operation is None)
+        self._update_tray()
+
+    def apply_zapret_operation_result(self, result):
+        snapshot=result.final_snapshot or self.zapret_snapshot
+        any_active=bool(snapshot.active)
+        own=any(item.origin=='netpilot' for item in snapshot.active)
+        if result.status in {'partial','error'} and any_active:
+            self.zapret_snapshot=snapshot;self._zapret_inventory_ready=True
+            self._render_zapret_state('partial','Zapret остановлен не полностью',own,True)
+        elif result.status=='error':
+            self.apply_zapret_inventory_error('; '.join(result.errors))
+        else:
+            self.apply_zapret_snapshot(snapshot)
+
+    def apply_zapret_inventory_error(self, error):
+        self.zapret_semantic_state='error'
+        dot,status=self.detail_status_labels['zapret'];dot.set_active(False)
+        status.setText('Не удалось проверить Zapret');status.setToolTip(str(error))
+        self.home_summaries['zapret'].set_state(False,'Проверка недоступна')
+        self._component_states['zapret']=(False,'Проверка недоступна')
+        self._update_tray()
+
+    def refresh_zapret_inventory(self):
+        if self._zapret_operation is not None:
+            return
+        if any(str(item).startswith('zapret_inventory:') for item in self.running):
+            return
+        self._zapret_generation+=1
+        generation=self._zapret_generation
+        key=f'zapret_inventory:{generation}'
+        folder=m.sub_dir(self.cfg,'zapret')
+        self.running.add(key);self._set_zapret_actions_enabled(False)
+        def scan():
+            try:
+                result=WindowsZapretAdapter((folder,)).snapshot()
+                self.bus.done.emit(key,result,'')
+            except Exception as exc:
+                self.bus.done.emit(key,None,str(exc))
+        self.pool.submit(scan)
+
+    def show_stop_zapret_options(self):
+        own=sum(item.origin=='netpilot' for item in self.zapret_snapshot.active)
+        external=sum(item.origin!='netpilot' for item in self.zapret_snapshot.active)
+        panel=StopZapretPanel(own,external)
+        if self.inline_custom(panel) and panel.mode is not None:
+            self.stop_all_zapret(panel.mode, confirmed=True)
+
+    def stop_all_zapret(self, mode, confirmed=False):
+        mode=StopMode(mode)
+        if not self.zapret_snapshot.active:
+            self.note('Активный Zapret не найден.');return
+        own=sum(item.origin=='netpilot' for item in self.zapret_snapshot.active)
+        external=sum(item.origin!='netpilot' for item in self.zapret_snapshot.active)
+        if not confirmed:
+            suffix=(' Автозапуск подтверждённых служб и заданий будет отключён обратимо.'
+                    if mode==StopMode.DISABLE_RESTART else ' Настройки автозапуска не изменятся.')
+            if not self.inline_confirm('Остановить весь Zapret',
+                    f'Свой: {own}, внешний: {external}.{suffix}'):
+                return
+        operation='disable_restart' if mode==StopMode.DISABLE_RESTART else 'stop_all'
+        self.begin_privileged_operation(operation)
+
+    def _set_zapret_actions_enabled(self, enabled):
+        for name in ('stop_all_zapret_button','zapret_service_toggle','detail_service_toggle'):
+            widget=getattr(self,name,None)
+            if widget is not None:widget.setEnabled(bool(enabled))
+
+    def begin_privileged_operation(self, operation, strategy=''):
+        if self._zapret_operation is not None:
+            self.note('Дождитесь завершения операции Zapret.',True);return False
+        if not self._zapret_inventory_ready:
+            self.note('Сначала дождитесь проверки Zapret.',True);self.refresh_zapret_inventory();return False
+        request_id=str(uuid.uuid4())
+        request=PrivilegedRequest(request_id,operation,time.time(),
+                                  snapshot_digest(self.zapret_snapshot),strategy)
+        try:
+            write_request(m.ROOT/'privileged',request)
+            if not elevate_request(request_id):
+                raise RuntimeError('Windows не запустила подтверждение UAC')
+        except Exception as exc:
+            self.note(str(exc),True);return False
+        self._zapret_operation_generation+=1
+        generation=self._zapret_operation_generation
+        self._zapret_operation=(request_id,operation,strategy,time.monotonic()+180)
+        self._render_zapret_state('stopping' if operation!='transfer' else 'starting',
+                                  'Останавливаем…' if operation!='transfer' else 'Настраиваем автозапуск…',
+                                  self._zapret_own_active,bool(self.zapret_snapshot.active))
+        QTimer.singleShot(250,lambda:self._poll_privileged_response(request_id,generation))
+        return True
+
+    def _poll_privileged_response(self, request_id, generation):
+        if generation!=self._zapret_operation_generation or not self._zapret_operation:
+            return
+        try:
+            response=read_response(request_id,m.ROOT/'privileged')
+        except FileNotFoundError:
+            if time.monotonic()<self._zapret_operation[3]:
+                QTimer.singleShot(250,lambda:self._poll_privileged_response(request_id,generation));return
+            response=None
+        except Exception as exc:
+            self._zapret_operation=None;self.note('Операция Zapret: '+str(exc),True)
+            self.refresh_zapret_inventory();return
+        operation=self._zapret_operation[1];self._zapret_operation=None
+        if response is None:
+            self.note('Операция Zapret не завершилась вовремя.',True)
+        elif response.status=='success':
+            copy={'stop_all':'Весь Zapret остановлен',
+                  'disable_restart':'Zapret остановлен, автозапуск отключён',
+                  'transfer':'Автозапуск выбранной стратегии включён',
+                  'restore_autostart':'Внешний автозапуск восстановлен'}[operation]
+            self.note(copy)
+        else:
+            self.note('Операция Zapret: '+('; '.join(response.errors) or response.status),True)
+        self.refresh_zapret_inventory()
+
+    def request_zapret_transfer(self, strategy):
+        active=bool(self.zapret_snapshot.active)
+        message=(f'Передать автозапуск стратегии «{strategy}» службе NetPilot?')
+        if active:
+            message+=' Работающие экземпляры Zapret будут остановлены, а конфликтующий автозапуск сохранён для восстановления.'
+        if self.inline_confirm('Zapret вместе с Windows',message):
+            self.begin_privileged_operation('transfer',strategy)
+
+    def refresh_restore_autostart_action(self):
+        button=getattr(self,'restore_autostart_button',None)
+        if button is None:return
+        try:
+            backup=load_backup()
+            visible=bool(backup and (backup.services or backup.tasks))
+            button.setToolTip('')
+        except Exception as exc:
+            visible=True;button.setToolTip('Резерв требует проверки: '+str(exc))
+        button.setVisible(visible)
+
+    def restore_external_autostart(self):
+        if self.inline_confirm('Восстановить внешний автозапуск',
+                'Вернуть сохранённые режимы запуска внешних служб и заданий Zapret?'):
+            self.begin_privileged_operation('restore_autostart')
+
+    def offer_strategy_autostart(self, strategy):
+        if not strategy or strategy in self._prompted_strategies:
+            return
+        if m.zapret_service_owned() and m.zapret_service_strategy()==strategy:
+            return
+        self._prompted_strategies.add(strategy)
+        self._offered_strategy=strategy
+        self.message.hide();self.strategy_offer_label.setText('Запускать выбранную стратегию вместе с Windows?')
+        self.strategy_offer_widget.show();self._sync_page_footer()
+
+    def _accept_strategy_offer(self):
+        strategy=getattr(self,'_offered_strategy','');self._decline_strategy_offer()
+        if strategy:self.request_zapret_transfer(strategy)
+
+    def _decline_strategy_offer(self):
+        if hasattr(self,'strategy_offer_widget'):
+            self.strategy_offer_widget.hide();self._sync_page_footer()
 
     def inline_confirm(self, title, message):
         return InlineModal(self, title, message, question=True).exec()
@@ -896,9 +1138,9 @@ class NetPilot(QMainWindow):
         self.zapret_service_toggle.blockSignals(True);self.zapret_service_toggle.setChecked(present)
         self.zapret_service_toggle.blockSignals(False)
         if hasattr(self,'detail_service_toggle'):
-            self.detail_service_toggle.blockSignals(True);self.detail_service_toggle.setChecked(present)
+            self.detail_service_toggle.blockSignals(True);self.detail_service_toggle.setChecked(present and owned)
             self.detail_service_toggle.blockSignals(False)
-            self.detail_service_toggle.setEnabled(not present or owned)
+            self.detail_service_toggle.setEnabled(self._zapret_operation is None)
         if hasattr(self,'detail_facts'):
             self.detail_facts['zapret']['Запуск сервиса'].setText('Включён' if present else 'Выключен')
         if present and owned:
@@ -908,8 +1150,8 @@ class NetPilot(QMainWindow):
             self.zapret_service_toggle.setToolTip('Служба создана NetPilot')
         elif present:
             self.service_badge.setText('СЛУЖБА FLOWSEAL');self.service_badge.setObjectName('warn')
-            self.zapret_service_toggle.setEnabled(False)
-            self.zapret_service_toggle.setToolTip('Служба создана вне NetPilot; управление доступно в оригинальном service.bat')
+            self.zapret_service_toggle.setEnabled(self._zapret_operation is None)
+            self.zapret_service_toggle.setToolTip('Можно передать выбранную стратегию службе NetPilot')
         else:
             self.service_badge.setText('ВЫКЛ');self.service_badge.setObjectName('muted')
             self.zapret_service_toggle.setEnabled(True);self.zapret_service_toggle.setToolTip('Установить службу Zapret')
@@ -920,18 +1162,14 @@ class NetPilot(QMainWindow):
         folder=m.sub_dir(self.cfg,'zapret')
         if value and not folder.is_dir():
             self.refresh_service_setting();self.install_dialog();return
-        if self.test_running or self.managed_pids:
-            self.note('Сначала остановите проверку и Zapret, запущенный из NetPilot.',True)
-            self.refresh_service_setting();return
-        if m.service_state('zapret')!='not_installed' and not m.zapret_service_owned():
-            QMessageBox.information(self,'Служба Flowseal','Служба уже создана оригинальным Flowseal. NetPilot не изменяет и не удаляет чужие службы.')
+        if self.test_running:
+            self.note('Сначала остановите проверку стратегии.',True)
             self.refresh_service_setting();return
         strategy=self.cfg.get('strategy','general.bat')
         choices=m.list_strategies(folder) if folder.is_dir() else []
         if value and strategy not in choices:strategy=choices[0] if choices else ''
         if value:
-            message=f'Установить системную службу для «{strategy}»? Zapret будет запускаться автоматически вместе с Windows.'
-            flag='--install-zapret-service'
+            self.request_zapret_transfer(strategy);return
         else:
             message='Удалить автозапуск Zapret? Будет удалена только служба, созданная NetPilot.'
             flag='--remove-zapret-service'
@@ -979,7 +1217,7 @@ class NetPilot(QMainWindow):
             active, label = states.get(key, (False, 'Проверяется'))
             action = self.tray_actions.get(key)
             if action is not None:
-                action.setChecked(bool(active))
+                action.setChecked(bool(self._zapret_own_active) if key=='zapret' and hasattr(self,'_zapret_own_active') else bool(active))
                 action.setText(f'{title} · {label}')
             details.append(f'{title}: {label.lower()}')
         self.tray.setToolTip('NetPilot · ' + summary + '\n' + ' · '.join(details))
@@ -1103,6 +1341,14 @@ class NetPilot(QMainWindow):
 
     def completed(self,key,result,error):
         self.running.discard(key)
+        if str(key).startswith('zapret_inventory:'):
+            try:generation=int(str(key).split(':',1)[1])
+            except ValueError:return
+            if generation!=self._zapret_generation:return
+            if error:self.apply_zapret_inventory_error(error)
+            else:self.apply_zapret_snapshot(result,generation)
+            self._set_zapret_actions_enabled(self._zapret_operation is None)
+            return
         if error:
             if key=='autohealth':
                 self.latest_auto_health={'error':error}
@@ -1130,6 +1376,7 @@ class NetPilot(QMainWindow):
                 self.strategy_name.setText(best['strategy'].replace('general','').replace('.bat','').strip(' ()') or 'general')
                 self.detail_facts['zapret']['Результат'].setText(f"{best['passed']} из {best['total']} адресов")
                 self.note(('Автоподбор завершён: ' if was_automatic else 'Подбор завершён: ')+best['strategy'])
+                if not was_automatic:self.offer_strategy_autostart(best['strategy'])
                 if self.tray.isVisible():self.tray.showMessage('NetPilot',('Применена: ' if self.managed_pids else 'Подобрана: ')+best['strategy'],QSystemTrayIcon.MessageIcon.Information,5000)
             else:
                 self.strategy_name.setText('Нет подтверждённых ответов')
@@ -1218,9 +1465,13 @@ class NetPilot(QMainWindow):
                 self.managed_pids=[pid for pid in self.managed_pids if psutil.pid_exists(pid)]
             except Exception:pass
         zap_running=bool(self.managed_pids) or m.service_state('zapret')=='RUNNING'
+        zap_label='Работает' if zap_running else 'Готов' if z.is_dir() else 'Не установлен'
+        if self._zapret_inventory_ready:
+            zap_running=bool(self.zapret_snapshot.active)
+            zap_label=self._component_states.get('zapret',(zap_running,'Готов'))[1]
         tele_running=bool(self.telegram_proc and self.telegram_proc.poll() is None)
         states={
-            'zapret':(zap_running,'Работает' if zap_running else 'Готов' if z.is_dir() else 'Не установлен'),
+            'zapret':(zap_running,zap_label),
             'telegram':(tele_running,'Работает' if tele_running else 'Готов'),
             'warp':(self.warp_connected,'Подключён' if self.warp_connected else 'Готов' if m.warp_cli() else 'Не установлен'),
         }
@@ -1250,6 +1501,8 @@ class NetPilot(QMainWindow):
         self.detail_facts['warp']['Подключение'].setText('Подключено' if self.warp_connected else 'Отключено')
         self._update_tray()
         self.refresh_service_setting()
+        self.refresh_restore_autostart_action()
+        self.refresh_zapret_inventory()
         if m.warp_cli() and not self.warp_pending and 'warpstatus' not in self.running:
             if not hasattr(self,'_last_warp') or time.monotonic()-self._last_warp>30:
                 self._last_warp=time.monotonic();self.job('warpstatus',lambda:m.warp_action('status'))

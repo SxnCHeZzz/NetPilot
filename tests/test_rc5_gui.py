@@ -26,6 +26,7 @@ class SetupAndPreferences(unittest.TestCase):
     def setUp(self):
         with patch.object(ui.NetPilot, 'on_first_run', lambda self: None), \
              patch.object(ui.NetPilot, 'check_updates', lambda self, *a: None), \
+             patch.object(ui.NetPilot, 'refresh_zapret_inventory', lambda self: None), \
              patch.object(managed, 'service_state', return_value='not_installed'), \
              patch.object(managed, 'warp_cli', return_value=None):
             self.window = ui.NetPilot()
@@ -135,13 +136,14 @@ class SetupAndPreferences(unittest.TestCase):
         self.assertTrue(self.window.message.isHidden())
         self.assertEqual(self.window.detail_facts['warp']['Подключение'].text(),'Недоступно')
 
-    def test_foreign_flowseal_service_cannot_be_removed(self):
+    def test_foreign_flowseal_service_can_be_explicitly_transferred(self):
         with patch.object(managed,'service_state',return_value='RUNNING'), \
              patch.object(managed,'zapret_service_owned',return_value=False):
             self.window.refresh_service_setting()
         self.assertTrue(self.window.zapret_service_toggle.isChecked())
-        self.assertFalse(self.window.zapret_service_toggle.isEnabled())
+        self.assertTrue(self.window.zapret_service_toggle.isEnabled())
         self.assertEqual(self.window.service_badge.text(),'СЛУЖБА FLOWSEAL')
+        self.assertIn('передать',self.window.zapret_service_toggle.toolTip().lower())
 
     def test_wizard_starts_both_installs_when_selected(self):
         class DummySetup:
