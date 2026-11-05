@@ -7,6 +7,7 @@ from math import cos, pi, sin
 from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QPointF, Qt, QVariantAnimation
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QWidget
+from ui_motion import MotionTokens
 
 
 ACCENT = QColor('#66E3A4')
@@ -57,7 +58,7 @@ class AnimatedIcon(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         self._activation = QVariantAnimation(self)
-        self._activation.setDuration(180)
+        self._activation.setDuration(MotionTokens.CONFIRM_MS)
         self._activation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._activation.valueChanged.connect(self._activation_changed)
 
@@ -77,7 +78,7 @@ class AnimatedIcon(QWidget):
 
     def _start_motion(self, loop=False):
         self._motion.stop();self._motion.setStartValue(0.0);self._motion.setEndValue(1.0)
-        self._motion.setDuration(720 if loop else 220)
+        self._motion.setDuration(720 if loop else MotionTokens.CONFIRM_MS)
         self._motion.setEasingCurve(QEasingCurve.Type.Linear if loop else QEasingCurve.Type.OutCubic)
         self._motion.start()
 

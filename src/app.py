@@ -57,6 +57,7 @@ from windows_zapret import WindowsZapretAdapter
 from zapret_control import StopMode, load_backup
 from zapret_inventory import ZapretSnapshot
 from ui_icons import AnimatedIcon, IconKind, IconState
+from ui_motion import AnimatedToggle, WindowTransition
 
 VERSION = '0.5.4-rc6'
 ACCENT = '#66E3A4'
@@ -385,25 +386,9 @@ def app_icon():
     return status_icon()
 
 
-class Toggle(QPushButton):
-    """Accessible compact switch with a consistent appearance on Windows 10/11."""
-    def __init__(self, checked=False, parent=None):
-        super().__init__(parent)
-        self.setCheckable(True)
-        self.setChecked(checked)
-        self.setFixedSize(47, 26)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.toggled.connect(lambda _state:self.update())
-        self.setAccessibleName('Переключатель')
-
-    def paintEvent(self, event):
-        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(ACCENT if self.isChecked() else '#3E4845'))
-        p.drawRoundedRect(1, 1, 45, 24, 12, 12)
-        p.setBrush(QColor('#F7FAF8' if self.isEnabled() else '#A0AAA6'))
-        p.drawEllipse(25 if self.isChecked() else 4, 4, 19, 19)
-        p.end()
+class Toggle(AnimatedToggle):
+    """Backwards-compatible name for the confirmed-state switch."""
+    pass
 
 
 class Bus(QObject):
@@ -585,6 +570,7 @@ class NetPilot(QMainWindow):
         # 324x414 keeps the same readable proportions at about 40% less area.
         self.setFixedSize(324, 414)
         self._build()
+        self.window_transition=WindowTransition(self)
         self._tray_error_until = 0.0
         self._tray_active_count = 0
         self.tray = QSystemTrayIcon(status_icon(), self)
@@ -626,8 +612,8 @@ class NetPilot(QMainWindow):
         header.addStretch()
         self.settings_btn = HeaderAction('settings')
         self.settings_btn.clicked.connect(self.toggle_page); header.addWidget(self.settings_btn)
-        hide = HeaderAction('minimize')
-        hide.clicked.connect(self.hide); header.addWidget(hide)
+        self.hide_btn = HeaderAction('minimize')
+        self.hide_btn.clicked.connect(self.hide_to_tray); header.addWidget(self.hide_btn)
         self.pages = QStackedWidget(); box.addWidget(self.pages, 1)
         self._overview(); self._details(); self._settings()
         self.message = QLabel('Готов к работе'); self.message.setObjectName('muted')
@@ -1180,8 +1166,12 @@ class NetPilot(QMainWindow):
 
     def tray_clicked(self, reason):
         if reason==QSystemTrayIcon.ActivationReason.Trigger:
-            if self.isVisible():self.hide()
+            if self.isVisible():self.hide_to_tray()
             else:self.show_panel()
+
+    def hide_to_tray(self):
+        target=self.tray.geometry() if self.tray.isVisible() else None
+        self.window_transition.hide_to_tray(target)
 
     def show_panel(self):
         # Windows can hide its hidden-icon flyout as soon as this window gets
@@ -1189,10 +1179,10 @@ class NetPilot(QMainWindow):
         detected = find_overflow_rect()
         if detected is not None:
             self._overflow_rect = detected
-        self.showNormal()
-        self.raise_()
-        self.activateWindow()
         self._position_panel()
+        final=self.geometry()
+        self.window_transition.restore(final)
+        self.activateWindow()
 
     def _position_panel(self):
         tray_rect = self.tray.geometry() if self.tray.isVisible() else None
@@ -1221,7 +1211,7 @@ class NetPilot(QMainWindow):
         self.move(x, y)
 
     def closeEvent(self,event):
-        self.hide();event.ignore()
+        self.hide_to_tray();event.ignore()
 
     def on_first_run(self):
         if self.cfg.get('start_hidden',False) and ('--tray' in sys.argv):self.hide()
@@ -1663,6 +1653,7 @@ class NetPilot(QMainWindow):
                 self.note('Telegram Proxy: ' + str(exc), True)
         self.auto_strategy_timer.stop()
         self.message_timer.stop()
+        self.window_transition.finish_immediately()
         self.tray.hide()
         self.pool.shutdown(wait=False,cancel_futures=True)
         QApplication.instance().quit()
