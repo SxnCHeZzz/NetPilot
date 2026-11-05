@@ -56,7 +56,8 @@ from privileged import (PrivilegedRequest, elevate_request, read_response,
 from windows_zapret import WindowsZapretAdapter
 from zapret_control import StopMode, load_backup
 from zapret_inventory import ZapretSnapshot
-from ui_icons import AnimatedIcon, IconKind, IconState
+from ui_icons import (AnimatedIcon, ComponentTabButton, IconKind, IconState,
+                      IconTextButton, PremiumIconButton)
 from ui_motion import AnimatedToggle, WindowTransition
 
 VERSION = '0.5.4-rc6'
@@ -73,6 +74,8 @@ QFrame#surface{background:#13181C;border:1px solid #263039;border-radius:16px}
 QFrame#row{background:#171C21;border:1px solid #29323A;border-radius:12px}
 QFrame#row:hover{border-color:#3D4B52;background:#1B2227}
 QFrame#detailPanel{background:#11161A;border:1px solid #29343B;border-radius:14px}
+QFrame#noticeCard{background:#111A17;border:1px solid #315247;border-radius:12px}
+QFrame#noticeCardError{background:#241316;border:1px solid #A83F4D;border-radius:12px}
 QFrame#separator{background:#2A343A;min-width:1px;max-width:1px}
 QLabel#brand{font-size:19px;font-weight:800;letter-spacing:0.3px}
 QLabel#heading{font-size:15px;font-weight:750}
@@ -80,6 +83,8 @@ QLabel#heroTitle{font-size:24px;font-weight:750}
 QLabel#heroSubtitle{font-size:13px;color:#8F9A96}
 QLabel#componentName{font-size:14px;font-weight:700}
 QLabel#detailName{font-size:17px;font-weight:750}
+QLabel#noticeTitle{font-size:11px;font-weight:750;color:#F2F6F4}
+QLabel#noticeBody{font-size:10px;color:#D4DEDA}
 QLabel#factValue{font-size:12px;color:#F2F6F4;font-weight:650}
 QLabel#muted{font-size:11px;color:#8F9A96}
 QLabel#small{font-size:10px;color:#9EAAA5}
@@ -264,47 +269,24 @@ class StopZapretPanel(QWidget):
         self._active_modal.finish(True)
 
 
-class HeaderAction(QPushButton):
+class HeaderAction(PremiumIconButton):
     """Consistent vector navigation icons, independent of platform glyph fonts."""
     def __init__(self, kind, parent=None):
-        super().__init__(parent)
-        self.kind = kind
-        self.setFixedSize(36, 36)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip({'back':'Назад', 'settings':'Настройки', 'minimize':'Свернуть в трей'}[kind])
-        self.setAccessibleName(self.toolTip())
-        self.icon_view=AnimatedIcon({'back':IconKind.BACK,'settings':IconKind.GEAR,
-                                     'minimize':IconKind.MINIMIZE}[kind],24,self)
-        self.icon_view.setGeometry(6,6,24,24)
-        self.icon_view.set_state(IconState.ENABLED,animate=False)
+        icon={'back':IconKind.BACK,'settings':IconKind.GEAR,
+              'minimize':IconKind.MINIMIZE}[kind]
+        label={'back':'Назад','settings':'Настройки','minimize':'Свернуть в трей'}[kind]
+        super().__init__(icon,label,34,parent,visual_size=30,icon_size=16,
+                         corner_radius=9,idle_glow=False)
+        self.action_kind=kind
 
     def set_kind(self, kind):
-        self.kind = kind
+        self.action_kind = kind
         self.setToolTip({'back':'Назад', 'settings':'Настройки', 'minimize':'Свернуть в трей'}[kind])
         self.setAccessibleName(self.toolTip())
-        self.icon_view.kind={'back':IconKind.BACK,'settings':IconKind.GEAR,
-                             'minimize':IconKind.MINIMIZE}[kind]
+        self.kind={'back':IconKind.BACK,'settings':IconKind.GEAR,
+                   'minimize':IconKind.MINIMIZE}[kind]
+        self.icon_view.kind=self.kind
         self.icon_view.update();self.update()
-
-    def enterEvent(self,event):
-        self.icon_view.set_interaction(True,False);super().enterEvent(event)
-
-    def leaveEvent(self,event):
-        self.icon_view.set_interaction(False,False);super().leaveEvent(event)
-
-    def mousePressEvent(self,event):
-        self.icon_view.set_interaction(True,True);super().mousePressEvent(event)
-
-    def mouseReleaseEvent(self,event):
-        self.icon_view.set_interaction(self.underMouse(),False);super().mouseReleaseEvent(event)
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(QPen(QColor('#557064') if self.underMouse() else QColor('#303A40'), 1))
-        p.setBrush(QColor('#24312C') if self.underMouse() else QColor('#1C2328'))
-        p.drawRoundedRect(1, 1, self.width()-2, self.height()-2, 11, 11)
-        p.end()
 
 
 class StatusOrb(QWidget):
@@ -314,27 +296,36 @@ class StatusOrb(QWidget):
         self.active_count = 0
         self.busy = False
         self.error = False
-        self.setFixedSize(64, 64)
+        self.setFixedSize(86, 86)
+        self.icon_view=AnimatedIcon(IconKind.ACTIVITY,52,self)
+        self.icon_view.setGeometry(17,17,52,52)
+        self.icon_view.set_state(IconState.DISABLED,animate=False)
 
     def set_state(self, active_count, busy=False, error=False):
         self.active_count = int(active_count)
         self.busy = bool(busy)
         self.error = bool(error)
+        if self.error:
+            self.icon_view.kind=IconKind.WARNING;state=IconState.ENABLED
+        elif self.busy:
+            self.icon_view.kind=IconKind.REFRESH;state=IconState.LOADING
+        elif self.active_count:
+            self.icon_view.kind=IconKind.SUCCESS;state=IconState.SUCCESS
+        else:
+            self.icon_view.kind=IconKind.ACTIVITY;state=IconState.DISABLED
+        self.icon_view.set_state(state)
         self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        color = QColor(ERROR if self.error else WARNING if self.busy else ACCENT if self.active_count else '#65716C')
-        painter.setPen(QPen(color, 2))
+        color = QColor(ACCENT if self.error else WARNING if self.busy else ACCENT if self.active_count else '#65716C')
+        glow=QColor(color);glow.setAlpha(28)
+        painter.setPen(QPen(glow,7));painter.setBrush(Qt.BrushStyle.NoBrush);painter.drawEllipse(9,9,68,68)
+        painter.setPen(QPen(color, 1.2))
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawEllipse(5, 5, 54, 54)
-        glow = QColor(color); glow.setAlpha(42)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(glow)
-        painter.drawEllipse(14, 14, 36, 36)
-        painter.setBrush(color)
-        painter.drawEllipse(20, 20, 24, 24)
+        painter.drawEllipse(5,5,76,76);inner=QColor(color);inner.setAlpha(90)
+        painter.setPen(QPen(inner,1));painter.drawEllipse(13,13,60,60)
         painter.end()
 
 
@@ -344,7 +335,7 @@ class SummaryItem(QWidget):
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(7)
-        self.dot = AnimatedIcon({'zapret':IconKind.LOCK,'telegram':IconKind.NETWORK,
+        self.dot = AnimatedIcon({'zapret':IconKind.LOCK,'telegram':IconKind.TELEGRAM,
                                  'warp':IconKind.CLOUD}[kind],20)
         row.addWidget(self.dot, 0, Qt.AlignmentFlag.AlignTop)
         text = QVBoxLayout(); text.setSpacing(1); row.addLayout(text)
@@ -568,8 +559,8 @@ class NetPilot(QMainWindow):
         self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint |
                             Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        # 324x414 keeps the same readable proportions at about 40% less area.
-        self.setFixedSize(324, 414)
+        # Compact utility shell; text remains at native scale while chrome is tightened.
+        self.setFixedSize(308, 392)
         self._build()
         self.window_transition=WindowTransition(self)
         self._tray_error_until = 0.0
@@ -604,11 +595,13 @@ class NetPilot(QMainWindow):
 
     def _build(self):
         root = QWidget(objectName='root'); self.setCentralWidget(root)
-        box = QVBoxLayout(root); box.setContentsMargins(14, 12, 14, 10); box.setSpacing(8)
-        header = QHBoxLayout(); box.addLayout(header)
+        box = QVBoxLayout(root); box.setContentsMargins(12, 10, 12, 9); box.setSpacing(6)
+        header = QHBoxLayout();header.setSpacing(7);self.header_layout=header;box.addLayout(header)
         self.back_btn = HeaderAction('back'); self.back_btn.clicked.connect(lambda:self.show_page(0))
         self.back_btn.setVisible(False); header.addWidget(self.back_btn)
-        title = QLabel('◆  NetPilot'); title.setObjectName('brand'); header.addWidget(title)
+        self.brand_icon=AnimatedIcon(IconKind.BRAND,28);self.brand_icon.set_state(IconState.ENABLED,animate=False)
+        header.addWidget(self.brand_icon)
+        title = QLabel('NetPilot'); title.setObjectName('brand'); header.addWidget(title)
         header.addStretch()
         self.settings_btn = HeaderAction('settings')
         self.settings_btn.clicked.connect(self.toggle_page); header.addWidget(self.settings_btn)
@@ -616,8 +609,14 @@ class NetPilot(QMainWindow):
         self.hide_btn.clicked.connect(self.hide_to_tray); header.addWidget(self.hide_btn)
         self.pages = QStackedWidget(); box.addWidget(self.pages, 1)
         self._overview(); self._details(); self._settings()
-        self.message = QLabel('Готов к работе'); self.message.setObjectName('muted')
-        self.message.setWordWrap(True); self.message.setMaximumHeight(34); self.message.setVisible(False); box.addWidget(self.message)
+        self.message_card=QFrame(objectName='noticeCard');notice=QHBoxLayout(self.message_card)
+        notice.setContentsMargins(10,8,10,8);notice.setSpacing(8)
+        self.message_icon=AnimatedIcon(IconKind.SUCCESS,24);notice.addWidget(self.message_icon,0,Qt.AlignmentFlag.AlignTop)
+        notice_text=QVBoxLayout();notice_text.setSpacing(1);notice.addLayout(notice_text,1)
+        self.message_title=QLabel('Готово');self.message_title.setObjectName('noticeTitle');notice_text.addWidget(self.message_title)
+        self.message = QLabel('Готов к работе'); self.message.setObjectName('noticeBody')
+        self.message.setWordWrap(True); self.message.setMaximumHeight(34);notice_text.addWidget(self.message)
+        self.message.setVisible(False);self.message_card.setVisible(False);box.addWidget(self.message_card)
         self.message_timer=QTimer(self);self.message_timer.setSingleShot(True)
         self.message_timer.timeout.connect(self._hide_message)
         self.strategy_offer_widget=QWidget();offer=QHBoxLayout(self.strategy_offer_widget)
@@ -632,7 +631,7 @@ class NetPilot(QMainWindow):
 
     def _bottom_row(self, parent):
         footer=QWidget();bottom=QHBoxLayout(footer);bottom.setContentsMargins(0,0,0,0);parent.addWidget(footer)
-        button=QPushButton('↓  Компоненты');button.setObjectName('quiet');button.clicked.connect(self.install_dialog);bottom.addWidget(button)
+        button=IconTextButton(IconKind.COMPONENTS,'Компоненты');button.clicked.connect(self.install_dialog);bottom.addWidget(button)
         bottom.addStretch()
         about=QLabel('v'+VERSION.upper().replace('-RC',' RC'));about.setObjectName('small');bottom.addWidget(about)
         return button,footer
@@ -653,7 +652,8 @@ class NetPilot(QMainWindow):
             item=SummaryItem(title,key);self.home_summaries[key]=item;services.addWidget(item,1)
             if index<2:
                 divider=QFrame(objectName='separator');divider.setFixedHeight(42);services.addWidget(divider)
-        self.details_button=QPushButton('Подробности  ›');self.details_button.setObjectName('details')
+        self.details_button=IconTextButton(IconKind.CHEVRON,'Подробности',accented=True,trailing=True)
+        self.details_button.setFixedSize(160,38)
         self.details_button.clicked.connect(self.open_details);content.addWidget(self.details_button,0,Qt.AlignmentFlag.AlignHCenter)
         content.addStretch(2)
         self.install_button,self.overview_footer=self._bottom_row(content)
@@ -671,7 +671,8 @@ class NetPilot(QMainWindow):
         tabs=QHBoxLayout();tabs.setSpacing(4);content.addLayout(tabs)
         self.detail_tabs={}
         for index,(key,title) in enumerate((('zapret','Zapret'),('telegram','Telegram'),('warp','WARP'))):
-            button=QPushButton(title+'\nГотов');button.setObjectName('componentTab');button.setCheckable(True)
+            button=ComponentTabButton({'zapret':IconKind.LOCK,'telegram':IconKind.TELEGRAM,
+                                       'warp':IconKind.CLOUD}[key],title,'Готов')
             button.clicked.connect(lambda checked=False,i=index:self.select_detail(i));tabs.addWidget(button,1)
             self.detail_tabs[key]=button
             if index<2:
@@ -688,7 +689,7 @@ class NetPilot(QMainWindow):
             panel=QFrame(objectName='detailPanel');self.detail_stack.addWidget(panel)
             wrap=QVBoxLayout(panel);wrap.setContentsMargins(12,8,12,8);wrap.setSpacing(4)
             head=QHBoxLayout();wrap.addLayout(head)
-            dot=AnimatedIcon({'zapret':IconKind.LOCK,'telegram':IconKind.NETWORK,
+            dot=AnimatedIcon({'zapret':IconKind.LOCK,'telegram':IconKind.TELEGRAM,
                               'warp':IconKind.CLOUD}[key],24);head.addWidget(dot)
             names=QVBoxLayout();names.setSpacing(0);head.addLayout(names,1)
             name=QLabel(title);name.setObjectName('detailName');names.addWidget(name)
@@ -703,7 +704,8 @@ class NetPilot(QMainWindow):
                 self.detail_service_toggle=Toggle(False if self.smoke_mode else m.service_state('zapret')!='not_installed')
                 self.detail_service_toggle.toggled.connect(self.change_zapret_autostart);service.addWidget(self.detail_service_toggle)
                 label=QLabel('Запускать вместе с Windows');label.setWordWrap(True);service.addWidget(label,1)
-                action=QPushButton('Подобрать лучшую стратегию  ›');action.setObjectName('link');action.clicked.connect(self.start_test);wrap.addWidget(action)
+                action=IconTextButton(IconKind.STRATEGY,'Подобрать лучшую стратегию',accented=True)
+                action.setFixedHeight(34);action.clicked.connect(self.start_test);wrap.addWidget(action)
                 self.test_button=action
                 self.stop_all_zapret_button=QPushButton('Остановить весь Zapret  ›')
                 self.stop_all_zapret_button.setObjectName('danger')
@@ -813,9 +815,28 @@ class NetPilot(QMainWindow):
     def note(self, message, error=False):
         full=str(message)
         self._decline_strategy_offer()
-        self.message.setText(full[:180]);self.message.setToolTip(full)
-        self.message.setObjectName('error' if error else 'muted');self.message.setVisible(True)
-        self.message.style().unpolish(self.message); self.message.style().polish(self.message)
+        lower=full.casefold()
+        inventory_changed=('inventory is incomplete or changed' in lower or
+                           ('accessdenied' in lower and 'zapret' in lower))
+        if error and inventory_changed:
+            title='Не удалось изменить Zapret'
+            visible='Состояние Zapret изменилось. Обновите проверку и повторите действие.'
+        elif error:
+            title='Требуется внимание';visible=full[:180]
+        else:
+            title='Готово';visible=full[:180]
+        self.message_title.setText(title);self.message.setText(visible);self.message.setToolTip(full)
+        self.message_card.setToolTip(full);self.message_icon.kind=IconKind.ERROR if error else IconKind.SUCCESS
+        self.message_icon.set_state(IconState.ERROR if error else IconState.SUCCESS)
+        self.message_card.setObjectName('noticeCardError' if error else 'noticeCard')
+        self.message_card.style().unpolish(self.message_card);self.message_card.style().polish(self.message_card)
+        self.message.setVisible(True);self.message_card.setVisible(True)
+        if error:
+            if inventory_changed:
+                self.home_summaries['zapret'].set_state(False,'Ошибка')
+                self.home_summaries['zapret'].set_icon_state(IconState.ERROR)
+                self.detail_tabs['zapret'].set_icon_state(IconState.ERROR)
+            self._render_home_hero(error=True)
         self._sync_page_footer()
         self.message_timer.start(8000 if error else 5000)
         if error and hasattr(self, 'tray'):
@@ -824,13 +845,43 @@ class NetPilot(QMainWindow):
             QTimer.singleShot(8100, self._update_tray)
 
     def _sync_page_footer(self):
-        visible=self.message.isHidden() and self.strategy_offer_widget.isHidden()
+        visible=self.message_card.isHidden() and self.strategy_offer_widget.isHidden()
         if hasattr(self,'overview_footer'):self.overview_footer.setVisible(visible)
         if hasattr(self,'details_footer'):self.details_footer.setVisible(visible)
 
     def _hide_message(self):
-        self.message.hide()
+        self.message.hide();self.message_card.hide();self._restore_component_visual_states();self._render_home_hero()
         self._sync_page_footer()
+
+    def _component_icon_state(self,name,active):
+        if name!='zapret':
+            return IconState.ENABLED if active else IconState.DISABLED
+        return {'disabled':IconState.DISABLED,'managed':IconState.ENABLED,
+                'external':IconState.EXTERNAL,'multiple':IconState.PARTIAL,
+                'partial':IconState.PARTIAL,'error':IconState.ERROR,
+                'starting':IconState.STARTING,'stopping':IconState.STOPPING}.get(
+                    getattr(self,'zapret_semantic_state','disabled'),IconState.DISABLED)
+
+    def _restore_component_visual_states(self):
+        for name,(active,label) in self._component_states.items():
+            icon_state=self._component_icon_state(name,active)
+            self.home_summaries[name].set_state(active,label)
+            self.home_summaries[name].set_icon_state(icon_state)
+            self.detail_tabs[name].set_icon_state(icon_state,animate=False)
+
+    def _render_home_hero(self,error=False):
+        active_count=sum(bool(value[0]) for value in self._component_states.values())
+        busy=bool(self.running or self.test_running or self.warp_pending)
+        self.status_orb.set_state(active_count,busy,error)
+        if error:
+            self.home_title.setText('Требуется внимание')
+            self.home_subtitle.setText('Откройте подробности и проверьте состояние')
+        elif busy:
+            self.home_title.setText('Проверяем соединение')
+            self.home_subtitle.setText('NetPilot выполняет операцию автоматически')
+        else:
+            self.home_title.setText('Соединение в порядке')
+            self.home_subtitle.setText('NetPilot следит за сетью автоматически')
 
     def apply_zapret_snapshot(self, snapshot, generation=None):
         """Render only a current immutable inventory snapshot."""
@@ -856,13 +907,11 @@ class NetPilot(QMainWindow):
         self.zapret_semantic_state=semantic
         self._zapret_own_active=bool(own_active)
         self._component_states['zapret']=(bool(any_active),label)
-        icon_state={'disabled':IconState.DISABLED,'managed':IconState.ENABLED,
-                    'external':IconState.EXTERNAL,'multiple':IconState.PARTIAL,
-                    'partial':IconState.PARTIAL,'error':IconState.ERROR,
-                    'starting':IconState.STARTING,'stopping':IconState.STOPPING}.get(semantic,IconState.DISABLED)
+        icon_state=self._component_icon_state('zapret',bool(any_active))
         dot,status=self.detail_status_labels['zapret'];dot.set_state(icon_state);status.setText(label)
         self.home_summaries['zapret'].set_state(bool(any_active),label)
         self.home_summaries['zapret'].set_icon_state(icon_state)
+        self.detail_tabs['zapret'].set_icon_state(icon_state)
         selected=self.detail_tabs['zapret'].isChecked()
         self.detail_tabs['zapret'].setText('Zapret\n'+('Выбран' if selected else label))
         self.stop_all_zapret_button.setVisible(bool(any_active))
@@ -888,6 +937,7 @@ class NetPilot(QMainWindow):
         status.setText('Не удалось проверить Zapret');status.setToolTip(str(error))
         self.home_summaries['zapret'].set_state(False,'Проверка недоступна')
         self.home_summaries['zapret'].set_icon_state(IconState.ERROR)
+        self.detail_tabs['zapret'].set_icon_state(IconState.ERROR)
         self._component_states['zapret']=(False,'Проверка недоступна')
         self._update_tray()
 
@@ -1018,7 +1068,7 @@ class NetPilot(QMainWindow):
             return
         self._prompted_strategies.add(strategy)
         self._offered_strategy=strategy
-        self.message.hide();self.strategy_offer_label.setText('Запускать выбранную стратегию вместе с Windows?')
+        self._hide_message();self.strategy_offer_label.setText('Запускать выбранную стратегию вместе с Windows?')
         self.strategy_offer_widget.show();self._sync_page_footer()
 
     def _accept_strategy_offer(self):
@@ -1434,21 +1484,10 @@ class NetPilot(QMainWindow):
             detail.setText(label)
             dot,status=self.detail_status_labels[name];dot.set_active(active);status.setText(label)
             self.home_summaries[name].set_state(active,label)
+            self.detail_tabs[name].set_icon_state(self._component_icon_state(name,active),animate=False)
             tab_title={'zapret':'Zapret','telegram':'Telegram','warp':'WARP'}[name]
             self.detail_tabs[name].setText(tab_title+'\n'+('Выбран' if self.detail_tabs[name].isChecked() else label))
-        active_count=sum(s[0] for s in states.values())
-        busy=bool(self.running or self.test_running or self.warp_pending)
-        error=time.monotonic()<getattr(self,'_tray_error_until',0)
-        self.status_orb.set_state(active_count,busy,error)
-        if error:
-            self.home_title.setText('Требуется внимание')
-            self.home_subtitle.setText('Откройте подробности и проверьте состояние')
-        elif busy:
-            self.home_title.setText('Проверяем соединение')
-            self.home_subtitle.setText('NetPilot выполняет операцию автоматически')
-        else:
-            self.home_title.setText('Соединение в порядке')
-            self.home_subtitle.setText('NetPilot следит за сетью автоматически')
+        self._render_home_hero(error=time.monotonic()<getattr(self,'_tray_error_until',0))
         self.detail_facts['warp']['Подключение'].setText('Подключено' if self.warp_connected else 'Отключено')
         self._update_tray()
         self.refresh_service_setting()
@@ -1670,7 +1709,7 @@ def run_packaged_smoke(application, window):
         raise ValueError('packaged smoke requires an isolated NetPilot window')
     window.window_transition.reduced_motion=True
     window.show_panel();application.processEvents()
-    if window.size().toTuple()!=(324,414) or not window.tray.isVisible():
+    if window.size().toTuple()!=(308,392) or not window.tray.isVisible():
         raise RuntimeError('compact window or single tray surface was not created')
     window.open_details();window.select_detail(0);application.processEvents()
     for icon,_label in window.detail_status_labels.values():

@@ -5,7 +5,7 @@ from enum import Enum
 from math import cos, pi, sin
 
 from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QPointF, QRectF, Qt, QVariantAnimation
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QPushButton, QWidget
 from ui_motion import MotionTokens
 
@@ -16,6 +16,7 @@ MUTED = QColor('#8A9AA4')
 TEXT = QColor('#F2F6F4')
 WARNING = QColor('#F2BD62')
 ERROR = QColor('#FF7285')
+GEAR_HOVER_DEGREES = 20
 
 
 class IconKind(str, Enum):
@@ -37,6 +38,8 @@ class IconKind(str, Enum):
     LAYERS = 'layers'
     WINDOWS = 'windows'
     STRATEGY = 'strategy'
+    BRAND = 'brand'
+    CHEVRON = 'chevron'
 
 
 class IconState(str, Enum):
@@ -62,6 +65,7 @@ class AnimatedIcon(QWidget):
         self._hovered = False
         self._pressed = False
         self.interaction_progress = 0.0
+        self.idle_glow = True
         self.setFixedSize(int(size), int(size))
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
@@ -119,7 +123,7 @@ class AnimatedIcon(QWidget):
         loops=(state==IconState.LOADING or
                (self.kind==IconKind.CLOUD and state==IconState.ENABLED) or
                (self.kind==IconKind.TELEGRAM and state==IconState.STARTING) or
-               (self.kind==IconKind.WARNING and state==IconState.ERROR))
+               (self.kind==IconKind.WARNING and state in {IconState.ENABLED,IconState.ERROR}))
         if animate and self.isVisible() and loops:
             self._start_motion(loop=True)
         elif animate and self.isVisible() and state in {IconState.SUCCESS, IconState.ERROR}:
@@ -181,8 +185,9 @@ class AnimatedIcon(QWidget):
             painter.translate(12,12);painter.scale(.92,.92);painter.translate(-12,-12)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         color=self._color()
-        glow_strength=(.18+.18*self.interaction_progress) if self.state in {
-            IconState.ENABLED,IconState.EXTERNAL,IconState.SUCCESS,IconState.ERROR} else .12*self.interaction_progress
+        semantic_glow=.18 if self.idle_glow and self.state in {
+            IconState.ENABLED,IconState.EXTERNAL,IconState.SUCCESS,IconState.ERROR} else 0.0
+        glow_strength=semantic_glow+.12*self.interaction_progress
         if glow_strength:
             glow=QColor(color);glow.setAlphaF(min(.42,glow_strength))
             glow_pen=QPen(glow,5.2);glow_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -229,7 +234,7 @@ class AnimatedIcon(QWidget):
 
     def _draw_gear(self,p):
         p.drawEllipse(QPointF(12,12),4.3,4.3);p.drawEllipse(QPointF(12,12),1.2,1.2)
-        turn=(.08 if self._hovered else 0)*pi
+        turn=(GEAR_HOVER_DEGREES/180)*pi*self.interaction_progress
         for index in range(8):
             angle=index*pi/4+turn
             p.drawLine(QPointF(12+6*cos(angle),12+6*sin(angle)),QPointF(12+8.5*cos(angle),12+8.5*sin(angle)))
@@ -250,7 +255,7 @@ class AnimatedIcon(QWidget):
         p.drawArc(10,17,4,3,180*16,180*16)
 
     def _draw_back(self,p):
-        shift=-1.5*self.interaction_progress
+        shift=-3*self.interaction_progress
         p.drawLine(QPointF(14+shift,6),QPointF(8+shift,12));p.drawLine(QPointF(8+shift,12),QPointF(14+shift,18))
         p.drawLine(QPointF(8+shift,12),QPointF(19+shift,12))
 
@@ -261,8 +266,7 @@ class AnimatedIcon(QWidget):
         p.drawEllipse(QPointF(12,12),8,8);p.drawLine(9,9,15,15);p.drawLine(15,9,9,15)
 
     def _draw_minimize(self,p):
-        lift=-.8*self.interaction_progress
-        p.drawLine(QPointF(6,13+lift),QPointF(18,13+lift))
+        p.drawLine(QPointF(6,13),QPointF(18,13))
 
     def _draw_telegram(self,p):
         path=QPainterPath();path.moveTo(3.5,11.2);path.lineTo(20.2,4.5)
@@ -302,17 +306,31 @@ class AnimatedIcon(QWidget):
         path=QPainterPath();path.moveTo(13.2,2.8);path.lineTo(5.5,13);path.lineTo(11,13)
         path.lineTo(9.9,21.2);path.lineTo(18.5,10);path.lineTo(13,10);path.closeSubpath();p.drawPath(path)
 
+    def _draw_brand(self,p):
+        path=QPainterPath();path.moveTo(12,2.8);path.lineTo(21.2,12);path.lineTo(12,21.2)
+        path.lineTo(2.8,12);path.closeSubpath();p.drawPath(path)
+        inner=QPainterPath();inner.moveTo(12,6.8);inner.lineTo(17.2,12);inner.lineTo(12,17.2)
+        inner.lineTo(6.8,12);inner.closeSubpath();p.drawPath(inner)
+
+    def _draw_chevron(self,p):
+        shift=1.2*self.interaction_progress
+        p.drawLine(QPointF(9+shift,6),QPointF(15+shift,12));p.drawLine(QPointF(15+shift,12),QPointF(9+shift,18))
+
 
 class PremiumIconButton(QPushButton):
     """Custom icon-only control with shared hover, press and glow motion."""
-    def __init__(self,kind,accessible_name,size=42,parent=None):
+    def __init__(self,kind,accessible_name,size=42,parent=None,*,visual_size=None,
+                 icon_size=None,corner_radius=None,idle_glow=True):
         super().__init__(parent)
         self.kind=IconKind(kind);self.hover_progress=0.0;self.press_progress=0.0
+        self.visual_size=int(visual_size or size)
+        self.corner_radius=float(corner_radius or min(11,self.visual_size/3))
         self.setFixedSize(size,size);self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip(accessible_name);self.setAccessibleName(accessible_name)
         self.setStyleSheet('border:none;background:transparent;padding:0')
-        icon_size=24 if size<=42 else 28
+        icon_size=int(icon_size or (24 if size<=42 else 28))
         self.icon_view=AnimatedIcon(self.kind,icon_size,self)
+        self.icon_view.idle_glow=bool(idle_glow)
         self.icon_view.setGeometry((size-icon_size)//2,(size-icon_size)//2,icon_size,icon_size)
         self.icon_view.set_state(IconState.ENABLED,animate=False)
         self._hover_anim=QVariantAnimation(self);self._press_anim=QVariantAnimation(self)
@@ -345,25 +363,34 @@ class PremiumIconButton(QPushButton):
 
     def paintEvent(self,event):
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect=QRectF(1.5+self.press_progress,1.5+self.press_progress,
-                    self.width()-3-2*self.press_progress,self.height()-3-2*self.press_progress)
-        if self.hover_progress:
+        inset=(self.width()-self.visual_size)/2+.5
+        press=.65*self.press_progress
+        rect=QRectF(inset+press,inset+press,
+                    self.visual_size-1-2*press,self.visual_size-1-2*press)
+        compact=self.visual_size<self.width()
+        if self.hover_progress and not compact:
             glow=QColor(ACCENT);glow.setAlpha(round(44*self.hover_progress))
             painter.setPen(QPen(glow,4));painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(rect,12,12)
-        border=QColor('#2D393D');hover=QColor('#2E9E75')
+            painter.drawRoundedRect(rect,self.corner_radius,self.corner_radius)
+        border=QColor('#273337');hover=QColor('#3BB889')
         border.setRed(round(border.red()+(hover.red()-border.red())*self.hover_progress))
         border.setGreen(round(border.green()+(hover.green()-border.green())*self.hover_progress))
         border.setBlue(round(border.blue()+(hover.blue()-border.blue())*self.hover_progress))
-        painter.setPen(QPen(border,1));painter.setBrush(QColor('#15201D' if self.hover_progress>.01 else '#151B1F'))
-        painter.drawRoundedRect(rect,11,11);painter.end()
+        background=QColor('#11191B');hover_background=QColor('#162720')
+        for channel in ('red','green','blue'):
+            setter=getattr(background,'set'+channel.capitalize())
+            setter(round(getattr(background,channel)()+
+                         (getattr(hover_background,channel)()-getattr(background,channel)())*self.hover_progress))
+        painter.setPen(QPen(border,1));painter.setBrush(background)
+        painter.drawRoundedRect(rect,self.corner_radius,self.corner_radius);painter.end()
 
 
 class IconTextButton(PremiumIconButton):
     """Compact action button with an original vector icon and real button semantics."""
-    def __init__(self,kind,text,parent=None,*,accented=False):
+    def __init__(self,kind,text,parent=None,*,accented=False,trailing=False):
         QPushButton.__init__(self,parent)
-        self.kind=IconKind(kind);self.hover_progress=0.0;self.press_progress=0.0;self.accented=bool(accented)
+        self.kind=IconKind(kind);self.hover_progress=0.0;self.press_progress=0.0
+        self.accented=bool(accented);self.trailing=bool(trailing)
         self.setText(text);self.setAccessibleName(text);self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMinimumSize(112,36);self.setStyleSheet('border:none;background:transparent;padding:0')
         self.icon_view=AnimatedIcon(self.kind,22,self);self.icon_view.set_state(IconState.ENABLED,animate=False)
@@ -374,7 +401,8 @@ class IconTextButton(PremiumIconButton):
         self._press_anim.valueChanged.connect(lambda value:self._set_press(value))
 
     def resizeEvent(self,event):
-        self.icon_view.setGeometry(10,(self.height()-22)//2,22,22);super().resizeEvent(event)
+        x=self.width()-32 if self.trailing else 10
+        self.icon_view.setGeometry(x,(self.height()-22)//2,22,22);super().resizeEvent(event)
 
     def paintEvent(self,event):
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -388,6 +416,45 @@ class IconTextButton(PremiumIconButton):
         border=QColor(ACCENT if self.accented else '#365047')
         border.setAlpha(round((175 if self.accented else 120)+70*self.hover_progress))
         painter.setPen(QPen(border,1));painter.setBrush(base);painter.drawRoundedRect(rect,11,11)
-        painter.setPen(QColor('#F2F6F4'));font=painter.font();font.setWeight(650);painter.setFont(font)
-        painter.drawText(QRectF(39,0,self.width()-47,self.height()),Qt.AlignmentFlag.AlignVCenter|Qt.AlignmentFlag.AlignLeft,self.text())
+        painter.setPen(QColor('#F2F6F4'));font=painter.font();font.setWeight(QFont.Weight.DemiBold);painter.setFont(font)
+        text_rect=(QRectF(13,0,self.width()-45,self.height()) if self.trailing else
+                   QRectF(39,0,self.width()-47,self.height()))
+        align=Qt.AlignmentFlag.AlignVCenter|(Qt.AlignmentFlag.AlignCenter if self.trailing else Qt.AlignmentFlag.AlignLeft)
+        painter.drawText(text_rect,align,self.text())
+        painter.end()
+
+
+class ComponentTabButton(IconTextButton):
+    """Icon-led two-line component selector used by the compact details view."""
+    def __init__(self,kind,title,status='Готов',parent=None):
+        self._title=str(title);self._status=str(status)
+        super().__init__(kind,self._title+'\n'+self._status,parent)
+        self.icon_view.set_state(IconState.DISABLED,animate=False)
+        self.setCheckable(True);self.setMinimumSize(76,48);self.setMaximumHeight(48)
+
+    def set_icon_state(self,state,animate=True):
+        self.icon_view.set_state(state,animate=animate)
+
+    def setText(self,text):
+        parts=str(text).split('\n',1)
+        self._title=parts[0];self._status=parts[1] if len(parts)>1 else getattr(self,'_status','')
+        QPushButton.setText(self,self._title+'\n'+self._status);self.update()
+
+    def resizeEvent(self,event):
+        self.icon_view.setGeometry(6,9,18,18);QPushButton.resizeEvent(self,event)
+
+    def paintEvent(self,event):
+        painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if self.hover_progress or self.isChecked():
+            shade=QColor('#11231D');shade.setAlpha(round(55+45*self.hover_progress))
+            painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(shade)
+            painter.drawRoundedRect(QRectF(1,2,self.width()-2,self.height()-5),9,9)
+        if self.isChecked():
+            painter.setPen(QPen(ACCENT,2));painter.drawLine(5,self.height()-2,self.width()-5,self.height()-2)
+        title=QColor(TEXT if self.isChecked() else '#D8E1DD')
+        painter.setPen(title);font=painter.font();font.setWeight(QFont.Weight.DemiBold);painter.setFont(font)
+        painter.drawText(QRectF(28,4,self.width()-31,20),Qt.AlignmentFlag.AlignVCenter|Qt.AlignmentFlag.AlignLeft,self._title)
+        painter.setPen(QColor(ACCENT if self.isChecked() else '#96A49E'))
+        small=painter.font();small.setPixelSize(10);small.setWeight(QFont.Weight.Medium);painter.setFont(small)
+        painter.drawText(QRectF(28,23,self.width()-31,18),Qt.AlignmentFlag.AlignVCenter|Qt.AlignmentFlag.AlignLeft,self._status)
         painter.end()

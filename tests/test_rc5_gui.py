@@ -89,7 +89,7 @@ class SetupAndPreferences(unittest.TestCase):
         self.assertIn('Активно 2 из 3', self.window.tray.toolTip())
 
     def test_compact_details_switches_one_panel(self):
-        self.assertEqual((self.window.width(), self.window.height()), (324, 414))
+        self.assertEqual((self.window.width(), self.window.height()), (308, 392))
         self.window.open_details()
         self.assertEqual(self.window.pages.currentIndex(), 1)
         self.window.select_detail(1)
@@ -112,7 +112,7 @@ class SetupAndPreferences(unittest.TestCase):
 
     def test_detail_cards_expose_only_distinct_actions(self):
         actions=[button.text() for button in self.window.findChildren(QPushButton)]
-        self.assertIn('Подобрать лучшую стратегию  ›',actions)
+        self.assertIn('Подобрать лучшую стратегию',actions)
         self.assertFalse(any('Telegram Desktop' in text for text in actions))
         self.assertFalse(any('статус WARP' in text for text in actions))
         self.assertTrue(self.window.test_details.isHidden())
@@ -131,6 +131,26 @@ class SetupAndPreferences(unittest.TestCase):
         self.window._hide_message()
         self.assertTrue(self.window.message.isHidden())
         self.assertFalse(self.window.details_footer.isHidden())
+
+    def test_zapret_access_denied_uses_polished_attention_state_and_keeps_diagnostics(self):
+        raw=('Operation Zapret: transfer: ValueError: inventory is incomplete or changed; '
+             'rescan and confirm again; process 336 cmdline: AccessDenied')
+        original_label=self.window.home_summaries['zapret'].status.text()
+        original_state=self.window.home_summaries['zapret'].dot.state
+        self.window.note(raw,True)
+        self.assertTrue(hasattr(self.window,'message_card'),'premium notice card is missing')
+        self.assertFalse(self.window.message_card.isHidden())
+        self.assertEqual(self.window.message_icon.kind,ui.IconKind.ERROR)
+        self.assertEqual(self.window.status_orb.icon_view.kind,ui.IconKind.WARNING)
+        self.assertEqual(self.window.home_title.text(),'Требуется внимание')
+        self.assertIn('повторите',self.window.message.text().lower())
+        self.assertNotIn('inventory is incomplete',self.window.message.text())
+        self.assertIn('AccessDenied',self.window.message.toolTip())
+        self.assertEqual(self.window.home_summaries['zapret'].dot.state,ui.IconState.ERROR)
+        self.assertEqual(self.window.home_summaries['zapret'].status.text(),'Ошибка')
+        self.window._hide_message()
+        self.assertEqual(self.window.home_summaries['zapret'].dot.state,original_state)
+        self.assertEqual(self.window.home_summaries['zapret'].status.text(),original_label)
 
     def test_failed_background_warp_poll_is_silent(self):
         self.window.completed('warpstatus',None,'daemon unavailable')

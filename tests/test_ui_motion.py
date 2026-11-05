@@ -137,7 +137,7 @@ class MotionIntegrationTests(unittest.TestCase):
 
     def test_netpilot_uses_confirmed_toggles_and_cancellable_tray_transition(self):
         self.assertIsInstance(self.window.detail_service_toggle,AnimatedToggle)
-        self.assertEqual(self.window.size().toTuple(),(324,414))
+        self.assertEqual(self.window.size().toTuple(),(308,392))
         self.window.show();self.app.processEvents()
         self.window.managed_pids=[123]
         self.window.hide_to_tray();QTest.qWait(MotionTokens.HIDE_MS+25)

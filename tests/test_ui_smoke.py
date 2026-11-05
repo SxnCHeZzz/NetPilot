@@ -60,7 +60,7 @@ class InterfaceSmoke(unittest.TestCase):
                 self.assertEqual(ui.run_packaged_smoke(self.qapp,window),0)
                 self.assertEqual(window.pages.count(),3)
                 self.assertTrue(window.isVisible())
-                self.assertEqual(window.size().toTuple(),(324,414))
+                self.assertEqual(window.size().toTuple(),(308,392))
             finally:
                 window.window_transition.finish_immediately()
                 window.tray.hide();window.hide()
