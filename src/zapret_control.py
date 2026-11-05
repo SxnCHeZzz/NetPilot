@@ -3,13 +3,125 @@
 No command strings are built here. Adapter mutations must be bounded and must
 address the exact service, task, or process identity supplied by the executor.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+import json
 import math
+import os
+from pathlib import Path
 import re
+import tempfile
 from typing import Protocol
 
 from zapret_inventory import ZapretItem, ZapretSnapshot
+
+
+AUTOSTART_DATA_DIR = Path(os.environ.get('LOCALAPPDATA') or Path.home()) / 'NetPilot'
+_BACKUP_FILENAME = 'zapret-autostart-v1.json'
+_SERVICE_MODES = frozenset({'automatic', 'automatic_delayed', 'manual', 'disabled', 'boot', 'system'})
+
+
+@dataclass(frozen=True)
+class AutostartBackup:
+    """Original configuration only; no commands or executable payloads."""
+    services: dict[str, str] = field(default_factory=dict)
+    tasks: dict[str, bool] = field(default_factory=dict)
+    version: int = 1
+    _storage_path: Path | None = field(default=None, repr=False, compare=False)
+
+
+def _backup_path(path=None) -> Path:
+    path = Path(path) if path is not None else AUTOSTART_DATA_DIR / _BACKUP_FILENAME
+    resolved = path.resolve()
+    if resolved.parent != AUTOSTART_DATA_DIR.resolve() or resolved.name != _BACKUP_FILENAME:
+        raise ValueError('autostart backup must use NetPilot data storage')
+    return resolved
+
+
+def _valid_task_name(name: str) -> bool:
+    return (isinstance(name, str) and name.startswith('\\') and len(name) <= 1024 and
+            all(_valid_name(part) for part in name[1:].split('\\')))
+
+
+def _validate_backup(backup: AutostartBackup) -> None:
+    if not isinstance(backup, AutostartBackup) or type(backup.version) is not int or backup.version != 1:
+        raise ValueError('unsupported autostart backup version; expected version 1')
+    for entries, kind in ((backup.services, 'service'), (backup.tasks, 'task')):
+        if not isinstance(entries, dict):
+            raise ValueError(f'invalid {kind} backup records')
+        seen = set()
+        for name, value in entries.items():
+            valid = _valid_name(name) if kind == 'service' else _valid_task_name(name)
+            if not valid or name.casefold() in seen:
+                raise ValueError(f'invalid or duplicate {kind} identifier')
+            seen.add(name.casefold())
+            if kind == 'service' and (not isinstance(value, str) or value not in _SERVICE_MODES):
+                raise ValueError(f'unsupported original service start mode: {name}')
+            if kind == 'task' and type(value) is not bool:
+                raise ValueError(f'invalid original task enabled state: {name}')
+
+
+def load_backup(path=None) -> AutostartBackup | None:
+    """Load a validated NetPilot version-one backup, without any age limit.
+
+    Missing storage is normal. Corruption and unsupported schemas raise rather
+    than silently discarding original configuration on the next operation.
+    """
+    path = _backup_path(path)
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('duplicate autostart backup field')
+            result[key] = value
+        return result
+    try:
+        raw = json.loads(path.read_text(encoding='utf-8'), object_pairs_hook=unique_object)
+    except FileNotFoundError:
+        return None
+    if (not isinstance(raw, dict) or set(raw) != {'owner', 'version', 'services', 'tasks'} or
+            raw['owner'] != 'NetPilot'):
+        raise ValueError('invalid NetPilot autostart backup schema')
+    backup = AutostartBackup(raw['services'], raw['tasks'], raw['version'], path)
+    _validate_backup(backup)
+    return backup
+
+
+def _write_backup(path: Path, backup: AutostartBackup) -> AutostartBackup:
+    _validate_backup(backup)
+    path = _backup_path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                         prefix=path.name + '.', suffix='.tmp', delete=False) as handle:
+            temporary = Path(handle.name)
+            json.dump({'owner': 'NetPilot', 'version': 1, 'services': backup.services,
+                       'tasks': backup.tasks}, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return AutostartBackup(dict(backup.services), dict(backup.tasks), _storage_path=path)
+
+
+def save_backup(path, backup: AutostartBackup) -> AutostartBackup:
+    """Atomically merge; the earliest unrestored value wins, ignoring case."""
+    _validate_backup(backup)
+    path = _backup_path(path)
+    previous = load_backup(path) or AutostartBackup()
+    merged = []
+    for old, new in ((previous.services, backup.services), (previous.tasks, backup.tasks)):
+        values = dict(old)
+        seen = {name.casefold() for name in values}
+        for name, value in new.items():
+            if name.casefold() not in seen:
+                values[name] = value
+                seen.add(name.casefold())
+        merged.append(values)
+    return _write_backup(path, AutostartBackup(*merged))
 
 
 class StopMode(str, Enum):
@@ -48,6 +160,7 @@ class OperationResult:
     remaining: tuple[ZapretItem, ...] = ()
     errors: tuple[str, ...] = ()
     completed_steps: tuple[OperationStep, ...] = ()
+    backup: AutostartBackup | None = None
 
     @property
     def success(self) -> bool:
@@ -67,6 +180,10 @@ class ZapretSystemAdapter(Protocol):
     def terminate_process(self, pid: int, *, create_time: float) -> None: ...
     def wait_process(self, pid: int, *, create_time: float, timeout: float) -> bool: ...
     def kill_process(self, pid: int, *, create_time: float) -> None: ...
+    def get_service_start_mode(self, name: str) -> str: ...
+    def set_service_start_mode(self, name: str, mode: str) -> None: ...
+    def get_task_enabled(self, path: str) -> bool: ...
+    def set_task_enabled(self, path: str, enabled: bool) -> None: ...
 
 
 def _valid_name(name: str) -> bool:
@@ -93,23 +210,23 @@ def _identifier(item: ZapretItem) -> str | int:
         return item.service.name
     if item.kind == 'task' and item.task is not None:
         name = item.task.name
-        if (not isinstance(name, str) or not name.startswith('\\') or
-                len(name) > 1024 or not all(_valid_name(part) for part in name[1:].split('\\'))):
+        if not _valid_task_name(name):
             raise ValueError('invalid absolute task path')
         return name
     raise ValueError('stop target kind does not match its source record')
 
 
 def make_stop_plan(snapshot: ZapretSnapshot, mode: StopMode) -> StopPlan:
-    """Plan only confirmed active targets; owners precede standalone processes.
+    """Plan confirmed targets; owners precede standalone active processes.
 
-    DISABLE_RESTART records intent for the reversible configuration layer. This
-    planner itself never changes or deletes startup settings.
+    DISABLE_RESTART also includes inactive service/task owners so a stopped
+    owner cannot restart later. Planning never changes startup settings.
     """
     mode = StopMode(mode)
-    active = snapshot.active
+    active = tuple(item for item in snapshot.items if item.confidence == 'confirmed' and
+                   (item.active or (mode == StopMode.DISABLE_RESTART and item.kind in {'service', 'task'})))
     identifiers = [(item, _identifier(item)) for item in active]
-    owned_pids = {item.service.pid for item in active if item.service and item.service.pid}
+    owned_pids = {item.service.pid for item in active if item.active and item.service and item.service.pid}
     steps, seen = [], set()
     for kind, action in (('service', StopAction.STOP_SERVICE), ('task', StopAction.STOP_TASK),
                          ('process', StopAction.STOP_PROCESS)):
@@ -130,7 +247,7 @@ def _snapshot(adapter: ZapretSystemAdapter) -> ZapretSnapshot:
     return snapshot
 
 
-def _current(step: OperationStep, adapter: ZapretSystemAdapter) -> bool:
+def _current(step: OperationStep, adapter: ZapretSystemAdapter, *, include_inactive=False) -> bool:
     """Revalidate the planned identity immediately before an operation."""
     source = step.source
     for item in _snapshot(adapter).items:
@@ -143,7 +260,7 @@ def _current(step: OperationStep, adapter: ZapretSystemAdapter) -> bool:
         expected = step.identifier if item.kind == 'process' else step.identifier.casefold()
         if identity != expected:
             continue
-        if not item.active:
+        if not item.active and not include_inactive:
             continue
         if item.confidence != 'confirmed':
             raise ValueError('target is no longer confirmed')
@@ -160,7 +277,31 @@ def _current(step: OperationStep, adapter: ZapretSystemAdapter) -> bool:
     return False
 
 
-def execute_stop(plan: StopPlan, adapter: ZapretSystemAdapter) -> OperationResult:
+def _disable_autostart(step: OperationStep, adapter: ZapretSystemAdapter, path: Path) -> AutostartBackup:
+    if not _current(step, adapter, include_inactive=True):
+        raise ValueError('autostart target is missing; rescan and retry')
+    name = step.identifier
+    if step.source.service:
+        original = adapter.get_service_start_mode(name)
+        pending = AutostartBackup(services={name: original})
+    else:
+        original = adapter.get_task_enabled(name)
+        pending = AutostartBackup(tasks={name: original})
+    backup = save_backup(path, pending)
+    if not _current(step, adapter, include_inactive=True):
+        raise ValueError('autostart target disappeared after backup; rescan and retry')
+    if step.source.service:
+        adapter.set_service_start_mode(name, 'disabled')
+        verified = adapter.get_service_start_mode(name) == 'disabled'
+    else:
+        adapter.set_task_enabled(name, False)
+        verified = adapter.get_task_enabled(name) is False
+    if not verified:
+        raise RuntimeError('could not verify disabled autostart; original state retained for restore')
+    return backup
+
+
+def execute_stop(plan: StopPlan, adapter: ZapretSystemAdapter, *, backup_path=None) -> OperationResult:
     """Execute reviewed targets and always derive the result from a final scan.
 
     Errors on one owner do not prevent independent safe steps. Service-owned
@@ -170,17 +311,28 @@ def execute_stop(plan: StopPlan, adapter: ZapretSystemAdapter) -> OperationResul
     """
     errors, completed = [], []
     rejected = False
+    configuration_failed = False
+    backup, path = None, None
     try:
         if plan != make_stop_plan(plan.snapshot, plan.mode):
             raise ValueError('stop plan differs from its validated source snapshot')
-        if plan.mode != StopMode.TEMPORARY:
-            raise ValueError('disable-restart requires the reversible configuration layer')
+        if plan.mode == StopMode.DISABLE_RESTART:
+            path = _backup_path(backup_path)
+            backup = load_backup(path)
     except Exception as exc:
         rejected = True
         errors.append(f'plan rejected: {type(exc).__name__}: {exc}')
     if not rejected:
         for step in plan.steps:
             try:
+                if plan.mode == StopMode.DISABLE_RESTART and step.source.kind in {'service', 'task'}:
+                    try:
+                        backup = _disable_autostart(step, adapter, path)
+                    except Exception:
+                        configuration_failed = True
+                        # A write may have succeeded before a system/readback failure.
+                        backup = load_backup(path)
+                        raise
                 if not _current(step, adapter):
                     continue
                 if step.action == StopAction.STOP_SERVICE:
@@ -201,8 +353,63 @@ def execute_stop(plan: StopPlan, adapter: ZapretSystemAdapter) -> OperationResul
         final = _snapshot(adapter)
     except Exception as exc:
         errors.append(f'final inventory failed: {type(exc).__name__}: {exc}')
-        return OperationResult('error', None, errors=tuple(errors), completed_steps=tuple(completed))
+        return OperationResult('error', None, errors=tuple(errors), completed_steps=tuple(completed), backup=backup)
     remaining = final.active
     errors.extend(final.warnings)
-    status = 'partial' if remaining else 'error' if rejected or final.warnings else 'success'
-    return OperationResult(status, final, remaining, tuple(errors), tuple(completed))
+    status = ('partial' if remaining or configuration_failed else
+              'error' if rejected or final.warnings else 'success')
+    return OperationResult(status, final, remaining, tuple(errors), tuple(completed), backup)
+
+
+def restore_autostart(backup: AutostartBackup, adapter: ZapretSystemAdapter) -> OperationResult:
+    """Restore only the current validated backup, retaining every unverified entry.
+
+    A caller-created object is not restoration authority: it must agree with the
+    current backup in NetPilot storage. Missing or ambiguous owners are retained
+    for a later explicit retry. Runtime processes are never started or stopped.
+    """
+    errors, rejected = [], False
+    pending = None
+    try:
+        _validate_backup(backup)
+        if backup._storage_path is None:
+            raise ValueError('restore requires a backup saved or loaded by NetPilot')
+        path = _backup_path(backup._storage_path)
+        pending = load_backup(path)
+        if pending is None or pending != backup:
+            raise ValueError('backup changed or is missing; reload it before restoring')
+    except Exception as exc:
+        rejected = True
+        errors.append(f'restore rejected: {type(exc).__name__}: {exc}')
+    if not rejected:
+        entries = [('service', name, value) for name, value in pending.services.items()]
+        entries += [('task', name, value) for name, value in pending.tasks.items()]
+        for kind, name, value in entries:
+            try:
+                # Validate again at the mutation boundary, including current ownership.
+                matches = [item for item in _snapshot(adapter).items if item.kind == kind and
+                           item.confidence == 'confirmed' and _identifier(item).casefold() == name.casefold()]
+                if not matches:
+                    raise ValueError('target is missing or not confirmed; rescan and retry')
+                if kind == 'service':
+                    adapter.set_service_start_mode(name, value)
+                    verified = adapter.get_service_start_mode(name) == value
+                else:
+                    adapter.set_task_enabled(name, value)
+                    verified = adapter.get_task_enabled(name) is value
+                if not verified:
+                    raise RuntimeError('could not verify restored configuration; retry restore')
+                services, tasks = dict(pending.services), dict(pending.tasks)
+                (services if kind == 'service' else tasks).pop(name)
+                pending = _write_backup(path, AutostartBackup(services, tasks))
+            except Exception as exc:
+                errors.append(f'restore {kind} {name}: {type(exc).__name__}: {exc}')
+    try:
+        final = _snapshot(adapter)
+    except Exception as exc:
+        errors.append(f'final inventory failed: {type(exc).__name__}: {exc}')
+        return OperationResult('error', None, errors=tuple(errors), backup=pending)
+    errors.extend(final.warnings)
+    status = ('error' if rejected or final.warnings else
+              'partial' if errors or pending.services or pending.tasks else 'success')
+    return OperationResult(status, final, final.active, tuple(errors), backup=pending)
