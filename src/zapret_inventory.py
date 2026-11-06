@@ -141,6 +141,37 @@ def classify_process(record: ProcessRecord, known_roots: Iterable[str]) -> Zapre
                       True, tuple(evidence), process=record)
 
 
+def classify_service(record: ServiceRecord, known_roots: Iterable[str]) -> ZapretItem | None:
+    """Classify the well-known Flowseal service using its executable and flags.
+
+    A service named ``zapret`` alone is never sufficient evidence. Some
+    Flowseal distributions do not expose a recognisable folder structure to
+    the Windows SCM query, even though ImagePath points to winws with real
+    Zapret arguments. This is a *read-only* classification; all mutations
+    still require an explicit confirmation and a fresh service backup.
+    """
+    parts = _tokens(record.command)
+    if not parts:
+        return None
+    process = ProcessRecord(record.pid or 0, exe=parts[0], cmdline=parts[1:])
+    result = classify_process(process, known_roots)
+    if result is None:
+        return None
+    evidence = list(result.evidence)
+    confidence = result.confidence
+    flags = tuple(str(flag).casefold() for flag in parts[1:])
+    has_filter = any(flag.startswith(('--wf-tcp=', '--wf-udp=')) for flag in flags)
+    has_desync = any(flag.startswith('--dpi-desync=') for flag in flags)
+    if (confidence != 'confirmed' and record.name.casefold() == 'zapret' and
+            ntpath.isabs(parts[0]) and has_filter and has_desync):
+        # Three independent indicators: service identity, a full winws path,
+        # and Zapret-specific filter/desynchronization arguments.
+        confidence = 'confirmed'
+        evidence.append('zapret-service-signature')
+    return ZapretItem('service', result.origin, confidence,
+                      record.state.casefold() == 'running', tuple(evidence), service=record)
+
+
 def build_snapshot(adapter: WindowsInventoryAdapter, known_roots: Iterable[str]) -> ZapretSnapshot:
     roots = tuple(known_roots)
     items, warnings, seen = [], [], set()
@@ -155,6 +186,8 @@ def build_snapshot(adapter: WindowsInventoryAdapter, known_roots: Iterable[str])
                 if kind == 'process':
                     warnings.extend(record.warnings)
                     item = classify_process(record, roots)
+                elif kind == 'service':
+                    item = classify_service(record, roots)
                 else:
                     parts = _tokens(record.command)
                     process = ProcessRecord(record.pid or 0, exe=parts[0] if parts else '', cmdline=parts[1:])
@@ -162,8 +195,7 @@ def build_snapshot(adapter: WindowsInventoryAdapter, known_roots: Iterable[str])
                     item = None if classified is None else ZapretItem(
                         kind, classified.origin, classified.confidence,
                         record.state.casefold() == 'running', classified.evidence,
-                        service=record if kind == 'service' else None,
-                        task=record if kind == 'task' else None)
+                        task=record)
                 if item is not None:
                     items.append(item)
         except Exception as exc:
@@ -184,6 +216,34 @@ class PsutilWindowsInventoryAdapter:
             raise ValueError('timeout must be positive')
         self.timeout = timeout
 
+    def _cim_process_details(self, pid: int) -> dict:
+        """Bounded read-only fallback for a named winws process.
+
+        Some elevated Windows sessions still deny psutil.cmdline(). CIM may
+        expose the identity without requiring any mutation of the process.
+        We require PID AND executable name to match before accepting its data.
+        """
+        script = (
+            '$p=Get-CimInstance Win32_Process -Filter "ProcessId = %d" '
+            '-ErrorAction Stop; if($p) {$p | Select-Object ProcessId,Name,ExecutablePath,CommandLine '
+            '| ConvertTo-Json -Compress}' % int(pid)
+        )
+        try:
+            result = subprocess.run(
+                ['powershell.exe','-NoProfile','-NonInteractive','-Command',script],
+                capture_output=True,text=True,encoding='utf-8',errors='replace',
+                timeout=min(self.timeout, 3.0),
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            if result.returncode != 0 or not result.stdout.strip():
+                return {}
+            value = json.loads(result.stdout.strip())
+            if (not isinstance(value,dict) or int(value.get('ProcessId') or -1) != int(pid)
+                    or str(value.get('Name') or '').casefold() not in {'winws.exe','winws2.exe'}):
+                return {}
+            return value
+        except (ValueError, OSError, subprocess.SubprocessError):
+            return {}
+
     def iter_processes(self) -> Iterable[ProcessRecord]:
         import psutil
         for process in psutil.process_iter():
@@ -197,11 +257,24 @@ class PsutilWindowsInventoryAdapter:
                     return default
 
             name = detail('name', '')
-            if name and name.casefold() not in {'winws.exe', 'winws2.exe'}:
+            # Only Zapret candidates belong in this inventory. On Windows,
+            # reading csrss/System/protected processes can fail with
+            # AccessDenied; trying cmdline() for those unrelated processes
+            # would incorrectly block EVERY Zapret service transfer.
+            # A name-less process is not a confirmed Zapret candidate.
+            if not name or name.casefold() not in {'winws.exe', 'winws2.exe'}:
                 continue
             exe = detail('exe', '')
             cmdline = detail('cmdline', ())
             create_time = detail('create_time', None)
+            if not exe or not cmdline:
+                recovered = self._cim_process_details(process.pid)
+                if not exe and recovered.get('ExecutablePath'):
+                    exe = str(recovered['ExecutablePath'])
+                    warnings = [w for w in warnings if ' exe:' not in w]
+                if not cmdline and recovered.get('CommandLine'):
+                    cmdline = _tokens(str(recovered['CommandLine']))
+                    warnings = [w for w in warnings if ' cmdline:' not in w]
             entries = ()
             if exe and ntpath.basename(ntpath.dirname(exe)).casefold() == 'bin':
                 root = Path(exe).parent.parent

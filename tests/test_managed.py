@@ -30,6 +30,7 @@ class TestManaged(unittest.TestCase):
             with self.assertRaises(ValueError):m.set_game_filter(temp,'../../evil')
             m.set_upstream_check(temp,True)
             self.assertTrue(m.zapret_options(temp)['update'])
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows cmd path expansion')
     def test_service_command_expands_selected_strategy(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp).resolve();(root/'bin').mkdir();(root/'lists').mkdir();(root/'utils').mkdir()

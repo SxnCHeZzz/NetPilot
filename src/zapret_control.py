@@ -14,7 +14,7 @@ import tempfile
 from typing import Protocol
 import uuid
 
-from zapret_inventory import ZapretItem, ZapretSnapshot
+from zapret_inventory import ZapretItem, ZapretSnapshot, ServiceRecord
 
 
 AUTOSTART_DATA_DIR = Path(os.environ.get('LOCALAPPDATA') or Path.home()) / 'NetPilot'
@@ -604,6 +604,32 @@ def _created_by_transfer(backup: ServiceBackup | None, transfer: ValidatedTransf
                 backup.adapter_fields.get('transaction_id') == transfer.transaction_id)
 
 
+def _snapshot_with_owned_service(adapter: ZapretSystemAdapter, transfer: ValidatedTransfer) -> ZapretSnapshot:
+    """Recover a just-created *own* service hidden by a lagging CIM query.
+
+    Only used AFTER our creation has been verified against the exact command
+    and a unique per-transaction registry marker. Never use this fallback to
+    authorize stopping or replacing an external service. Other discoveries
+    and warnings are retained; conflicts are not filtered out.
+    """
+    snapshot = _snapshot(adapter)
+    if any(item.service and item.service.name.casefold() == 'zapret' for item in snapshot.items):
+        return snapshot
+    owned = adapter.get_service_backup('zapret')
+    if not _created_by_transfer(owned, transfer):
+        return snapshot
+    if owned.state not in {'running', 'stopped'} or owned.start_mode not in {'automatic', 'automatic_delayed'}:
+        return snapshot
+    # A matching SCM PID is needed if a service-owned winws process also
+    # appears independently in the inventory, otherwise it stays a conflict.
+    read_pid = getattr(adapter, 'get_service_pid', None)
+    pid = read_pid('zapret') if callable(read_pid) else None
+    record = ServiceRecord(owned.name, owned.image_path, owned.state, pid)
+    verified = ZapretItem('service', 'netpilot', 'confirmed', owned.state == 'running',
+                          ('exact-transaction-marker', 'matching-service-command'), service=record)
+    return ZapretSnapshot(snapshot.items + (verified,), snapshot.warnings)
+
+
 def _reconcile_rollback_backup(path: Path, before: AutostartBackup,
                                services: set[str], tasks: set[str]) -> AutostartBackup:
     """Drop only entries introduced and already restored by this transaction."""
@@ -624,8 +650,8 @@ def transfer_to_netpilot(request: TransferRequest, adapter: ZapretSystemAdapter)
 
     Only the explicitly confirmed, name-conflicting ``zapret`` can be deleted.
     Other owners use the Task 3 durable autostart backup. Rollback never deletes
-    a resource unless this transaction attempted its creation and its current
-    inventory still proves NetPilot ownership and the selected command.
+    a resource unless the installed service carries the current transaction's
+    unique marker and exact command, verified immediately before deletion.
     """
     errors, completed = [], []
     transfer, creation_attempted, mutated = None, False, False
@@ -681,9 +707,10 @@ def transfer_to_netpilot(request: TransferRequest, adapter: ZapretSystemAdapter)
             adapter.create_netpilot_service(transfer)
             if not _created_by_transfer(adapter.get_service_backup('zapret'), transfer):
                 raise RuntimeError('created service ownership could not be verified')
-            new = next(i for i in _snapshot(adapter).items if i.service and i.service.name.casefold() == 'zapret')
+            new = next(i for i in _snapshot_with_owned_service(adapter, transfer).items if i.service and i.service.name.casefold() == 'zapret')
             completed.append(OperationStep(StopAction.CREATE_SERVICE, 'zapret', new))
-        current = _snapshot(adapter)
+        current = (_snapshot_with_owned_service(adapter, transfer) if creation_attempted
+                   else _snapshot(adapter))
         target, remaining = _transfer_remaining(current, transfer)
         if target is None or remaining or current.warnings:
             raise RuntimeError('could not verify selected NetPilot service configuration')
@@ -691,7 +718,8 @@ def transfer_to_netpilot(request: TransferRequest, adapter: ZapretSystemAdapter)
             mutated = True
             adapter.start_service(target.service.name)
             completed.append(OperationStep(StopAction.START_SERVICE, target.service.name, target))
-        final = _snapshot(adapter)
+        final = (_snapshot_with_owned_service(adapter, transfer) if creation_attempted
+                 else _snapshot(adapter))
         target, remaining = _transfer_remaining(final, transfer)
         if final.warnings or target is None or not target.active or remaining:
             raise RuntimeError('final service path, arguments, running state or conflicts failed verification')
@@ -706,13 +734,25 @@ def transfer_to_netpilot(request: TransferRequest, adapter: ZapretSystemAdapter)
             try:
                 owned = adapter.get_service_backup('zapret')
                 if _created_by_transfer(owned, transfer):
-                    current = _snapshot(adapter)
-                    target, _ = _transfer_remaining(current, transfer)
-                    if target is None:
-                        raise RuntimeError('transaction-owned service is missing from inventory')
-                    if target.active:
-                        adapter.stop_service(target.service.name)
-                    adapter.delete_service(target.service.name)
+                    # The broad CIM inventory can lag behind SCM / fail to
+                    # enumerate a just-created service. The exact registry
+                    # backup above *already proves* this transaction's unique
+                    # ownership marker AND command. Do not require that the
+                    # failing inventory can enumerate the new service again
+                    # merely to roll back our own resource.
+                    if owned.state == 'running':
+                        adapter.stop_service(owned.name)
+                        stopped = adapter.get_service_backup(owned.name)
+                        if not _created_by_transfer(stopped, transfer):
+                            raise RuntimeError('transaction ownership changed while stopping service')
+                        if stopped.state != 'stopped':
+                            raise RuntimeError('transaction service failed to stop')
+                    # Recheck the transaction marker at the mutation boundary;
+                    # never delete a service belonging to another installer.
+                    current_owned = adapter.get_service_backup(owned.name)
+                    if not _created_by_transfer(current_owned, transfer):
+                        raise RuntimeError('transaction service identity changed; cleanup refused')
+                    adapter.delete_service(owned.name)
                 elif owned is not None:
                     raise RuntimeError('service belongs to another transaction; cleanup refused')
             except Exception as exc:

@@ -65,12 +65,13 @@ class SetupAndPreferences(unittest.TestCase):
         self.assertFalse(any('тишина во время игр' in x for x in labels))
         self.assertFalse(any('автоматически применять лидера' in x for x in labels))
 
-    def test_settings_separate_app_and_zapret_startup(self):
+    def test_settings_use_unified_flowseal_startup(self):
         labels = [w.text() for w in self.window.findChildren(__import__('PySide6.QtWidgets',fromlist=['QLabel']).QLabel)]
         self.assertIn('NetPilot вместе с Windows',labels)
-        self.assertIn('Zapret вместе с Windows',labels)
-        self.assertIn('ВЫКЛ',labels)
-        self.assertIn('#66E3A4', ui.CSS)
+        self.assertNotIn('Zapret вместе с Windows',labels)
+        self.assertTrue(self.window.zapret_service_row.isHidden())
+        self.assertTrue(self.window.service_badge.text())
+        self.assertIn('#7DE7A1', ui.CSS)
         for active in range(4):
             self.assertFalse(ui.status_icon(active_count=active).isNull())
         self.assertFalse(ui.status_icon(busy=True).isNull())
@@ -89,7 +90,8 @@ class SetupAndPreferences(unittest.TestCase):
         self.assertIn('Активно 2 из 3', self.window.tray.toolTip())
 
     def test_compact_details_switches_one_panel(self):
-        self.assertEqual((self.window.width(), self.window.height()), (308, 392))
+        self.assertEqual(self.window.width(),400)
+        self.assertGreaterEqual(self.window.height(),280)
         self.window.open_details()
         self.assertEqual(self.window.pages.currentIndex(), 1)
         self.window.select_detail(1)
@@ -119,18 +121,18 @@ class SetupAndPreferences(unittest.TestCase):
 
     def test_background_status_is_silent_and_notices_expire(self):
         self.window.completed('warpstatus','Status update: Disconnected','')
-        self.assertTrue(self.window.message.isHidden())
+        before=self.window.size()
         self.window.note('Telegram Proxy включён')
-        self.assertFalse(self.window.message.isHidden())
-        self.assertTrue(self.window.message_timer.isActive())
+        self.assertEqual(self.window.size(),before)
+        self.assertFalse(hasattr(self.window,'message_card'))
+        self.assertIn('Telegram Proxy включён',self.window.event_journal.recent_text())
 
-    def test_notice_replaces_details_footer_instead_of_shrinking_card(self):
+    def test_notice_is_external_and_never_changes_page_footer(self):
         self.window.open_details()
+        original_size=self.window.size()
         self.window.note('Все компоненты актуальны')
-        self.assertTrue(self.window.details_footer.isHidden())
-        self.window._hide_message()
-        self.assertTrue(self.window.message.isHidden())
-        self.assertFalse(self.window.details_footer.isHidden())
+        self.assertFalse(hasattr(self.window,'details_footer'))
+        self.assertEqual(self.window.size(),original_size)
 
     def test_zapret_access_denied_uses_polished_attention_state_and_keeps_diagnostics(self):
         raw=('Operation Zapret: transfer: ValueError: inventory is incomplete or changed; '
@@ -138,39 +140,30 @@ class SetupAndPreferences(unittest.TestCase):
         original_label=self.window.home_summaries['zapret'].status.text()
         original_state=self.window.home_summaries['zapret'].dot.state
         self.window.note(raw,True)
-        self.assertTrue(hasattr(self.window,'message_card'),'premium notice card is missing')
-        self.assertFalse(self.window.message_card.isHidden())
-        self.assertEqual(self.window.message_icon.kind,ui.IconKind.ERROR)
-        self.assertEqual(self.window.status_orb.icon_view.kind,ui.IconKind.WARNING)
-        self.assertEqual(self.window.home_title.text(),'Требуется внимание')
-        self.assertIn('повторите',self.window.message.text().lower())
-        self.assertNotIn('inventory is incomplete',self.window.message.text())
-        self.assertIn('AccessDenied',self.window.message.toolTip())
+        self.assertFalse(hasattr(self.window,'message_card'))
+        self.assertIn('AccessDenied',self.window.event_journal.recent_text())
         self.assertEqual(self.window.home_summaries['zapret'].dot.state,ui.IconState.ERROR)
-        self.assertEqual(self.window.home_summaries['zapret'].status.text(),'Ошибка')
         self.window._hide_message()
         self.assertEqual(self.window.home_summaries['zapret'].dot.state,original_state)
         self.assertEqual(self.window.home_summaries['zapret'].status.text(),original_label)
 
     def test_failed_background_warp_poll_is_silent(self):
         self.window.completed('warpstatus',None,'daemon unavailable')
-        self.assertTrue(self.window.message.isHidden())
+        self.assertFalse(hasattr(self.window,'message_card'))
         self.assertEqual(self.window.detail_facts['warp']['Подключение'].text(),'Недоступно')
 
-    def test_foreign_flowseal_service_can_be_explicitly_transferred(self):
+    def test_flowseal_service_has_no_separate_autostart_toggle(self):
         with patch.object(managed,'service_state',return_value='RUNNING'), \
-             patch.object(managed,'zapret_service_owned',return_value=False):
+             patch.object(managed,'service_start_mode',return_value='AUTO_START'):
             self.window.refresh_service_setting()
-        self.assertFalse(self.window.zapret_service_toggle.isChecked())
-        self.assertTrue(self.window.zapret_service_toggle.isEnabled())
-        self.assertEqual(self.window.service_badge.text(),'СЛУЖБА FLOWSEAL')
-        self.assertIn('передать',self.window.zapret_service_toggle.toolTip().lower())
+        self.assertTrue(self.window.zapret_service_row.isHidden())
+        self.assertIn('FLOWSEAL',self.window.service_badge.text())
         with tempfile.TemporaryDirectory() as folder, \
              patch.object(managed,'sub_dir',return_value=Path(folder)), \
              patch.object(managed,'list_strategies',return_value=['general.bat']), \
-             patch.object(self.window,'request_zapret_transfer') as transfer:
+             patch.object(self.window,'offer_strategy_autostart') as offer:
             self.window.change_zapret_autostart(True)
-        transfer.assert_called_once()
+        offer.assert_called_once_with('general.bat')
 
     def test_wizard_starts_both_installs_when_selected(self):
         class DummySetup:

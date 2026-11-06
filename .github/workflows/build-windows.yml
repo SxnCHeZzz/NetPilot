@@ -20,7 +20,12 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: python -m unittest discover -s tests -v
       - name: Build UI app
-        run: python -m PyInstaller --clean --noconfirm --onedir --windowed --name NetPilot --icon assets\netpilot.ico --add-data "assets;assets" --collect-all proxy --collect-all utils --paths src src\app.py
+        run: python -m PyInstaller --clean --noconfirm --onedir --contents-directory . --windowed --name NetPilot --icon assets\netpilot.ico --add-data "assets;assets" --collect-all proxy --collect-all utils --paths src src\app.py
+      - name: Remove foreign ICU files accidentally discovered through PATH
+        shell: pwsh
+        run: |
+          Remove-Item -LiteralPath 'dist/NetPilot/icuuc.dll' -ErrorAction SilentlyContinue
+          Get-ChildItem 'dist/NetPilot' -Filter 'icudt*.dll' | Remove-Item -Force
       - name: Packaged UI smoke test
         env:
           QT_QPA_PLATFORM: offscreen
@@ -33,11 +38,11 @@ jobs:
         run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\NetPilot.iss'
       - name: Portable ZIP
         shell: pwsh
-        run: Compress-Archive -LiteralPath 'dist/NetPilot','LICENSE','THIRD_PARTY_NOTICES.txt' -DestinationPath 'dist/NetPilot-0.5.4-rc6-Portable.zip'
+        run: Compress-Archive -LiteralPath 'dist/NetPilot','LICENSE','THIRD_PARTY_NOTICES.txt' -DestinationPath 'dist/NetPilot-0.5.4-rc11-Portable.zip'
       - name: Checksums
         shell: pwsh
         run: |
-          $files = @('dist/installer/NetPilot-0.5.4-rc6-Setup.exe', 'dist/NetPilot-0.5.4-rc6-Portable.zip')
+          $files = @('dist/installer/NetPilot-0.5.4-rc11-Setup.exe', 'dist/NetPilot-0.5.4-rc11-Portable.zip')
           $lines = foreach ($file in $files) {
             $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file).Hash.ToLowerInvariant()
             "$hash  $([IO.Path]::GetFileName($file))"
@@ -46,10 +51,10 @@ jobs:
       - name: Upload Windows deliverables
         uses: actions/upload-artifact@v4
         with:
-          name: NetPilot-0.5.4-RC6-Windows
+          name: NetPilot-0.5.4-RC11-Windows
           path: |
-            dist/installer/NetPilot-0.5.4-rc6-Setup.exe
-            dist/NetPilot-0.5.4-rc6-Portable.zip
+            dist/installer/NetPilot-0.5.4-rc11-Setup.exe
+            dist/NetPilot-0.5.4-rc11-Portable.zip
             dist/SHA256SUMS.txt
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -58,16 +63,17 @@ jobs:
           prerelease: true
           generate_release_notes: true
           body: |
-            ## NetPilot 0.5.4 RC6
+            ## NetPilot 0.5.4 RC11
 
-            - Compact 324 × 414 interface with single-action component cards.
+            - Compact premium interface with unified vector icons and subtle motion.
             - Automatic Zapret health monitoring and safe strategy selection.
-            - Dynamic tray icon and separate Windows startup controls.
+            - Dynamic tray status and smooth minimize/restore behavior.
             - Verified external Zapret discovery, full stop, reversible startup disable and transactional service transfer.
-            - Original vector state icons and smooth minimize/restore motion.
+            - Unified Flowseal strategy and Windows service management.
             - Clear Telegram Proxy and WARP controls without duplicate actions.
-            - Improved component installer, rollback guidance and Russian/English documentation.
+            - Event journal, Windows notifications and passive system traffic display.
+            - Updated Russian and English documentation.
           files: |
-            dist/installer/NetPilot-0.5.4-rc6-Setup.exe
-            dist/NetPilot-0.5.4-rc6-Portable.zip
+            dist/installer/NetPilot-0.5.4-rc11-Setup.exe
+            dist/NetPilot-0.5.4-rc11-Portable.zip
             dist/SHA256SUMS.txt

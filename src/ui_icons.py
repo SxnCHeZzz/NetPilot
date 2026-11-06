@@ -5,22 +5,24 @@ from enum import Enum
 from math import cos, pi, sin
 
 from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QPointF, QRectF, Qt, QVariantAnimation
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QPushButton, QWidget
 from ui_motion import MotionTokens
+from ui_theme import ACCENT as THEME_ACCENT, ACCENT_HOVER as THEME_ACCENT_BRIGHT, MUTED as THEME_MUTED, TEXT as THEME_TEXT, ERROR as THEME_ERROR
 
 
-ACCENT = QColor('#66E3A4')
-ACCENT_BRIGHT = QColor('#8AF0BC')
-MUTED = QColor('#8A9AA4')
-TEXT = QColor('#F2F6F4')
+ACCENT = QColor(THEME_ACCENT)
+ACCENT_BRIGHT = QColor(THEME_ACCENT_BRIGHT)
+MUTED = QColor(THEME_MUTED)
+TEXT = QColor(THEME_TEXT)
 WARNING = QColor('#F2BD62')
-ERROR = QColor('#FF7285')
+ERROR = QColor(THEME_ERROR)
 GEAR_HOVER_DEGREES = 20
 
 
 class IconKind(str, Enum):
     LOCK = 'lock'
+    SHIELD = 'shield'
     CLOUD = 'cloud'
     NETWORK = 'network'
     GEAR = 'gear'
@@ -53,6 +55,20 @@ class IconState(str, Enum):
     SUCCESS = 'success'
     ERROR = 'error'
 
+
+
+
+def paint_brand_symbol(p):
+    """Draw the compact original NetPilot network route at 24x24 coordinates."""
+    p.drawRoundedRect(QRectF(2.9,2.9,18.2,18.2),4.8,4.8)
+    route=QPainterPath()
+    route.moveTo(7.2,16.7)
+    route.lineTo(11.5,11.6)
+    route.lineTo(17.3,7.3)
+    p.drawPath(route)
+    p.drawLine(QPointF(7.0,7.5),QPointF(11.5,11.6))
+    for x,y in ((7.0,7.5),(7.2,16.7),(11.5,11.6),(17.3,7.3)):
+        p.drawEllipse(QPointF(x,y),1.25,1.25)
 
 class AnimatedIcon(QWidget):
     """One semantic icon surface; animations exist only during transitions."""
@@ -225,6 +241,32 @@ class AnimatedIcon(QWidget):
         path.cubicTo(8,4.5,16,4.5,16+3.2*opened,10-3.0*opened)
         p.drawPath(path);p.drawEllipse(QPointF(12,15),1.1,1.1)
 
+    def _draw_shield(self,p):
+        """Stable, symmetric shield + lock; no awkward open-shackle geometry.
+
+        Operational state is conveyed by color and the status text, not by
+        bending the shackle in an unclear direction.
+        """
+        shield=QPainterPath()
+        shield.moveTo(12,2.3)
+        shield.cubicTo(9.7,3.6,6.5,4.3,4,5.0)
+        shield.lineTo(4,12.1)
+        shield.cubicTo(4,16.9,7.5,20.2,12,22.0)
+        shield.cubicTo(16.5,20.2,20,16.9,20,12.1)
+        shield.lineTo(20,5.0)
+        shield.cubicTo(17.5,4.3,14.3,3.6,12,2.3)
+        shield.closeSubpath()
+        p.drawPath(shield)
+        # Centered rounded padlock, deliberately small enough to read at 18 px.
+        p.drawRoundedRect(QRectF(8.1,11.5,7.8,6.4),1.15,1.15)
+        shackle=QPainterPath()
+        shackle.moveTo(9.75,11.5)
+        shackle.lineTo(9.75,9.6)
+        shackle.cubicTo(9.75,6.55,14.25,6.55,14.25,9.6)
+        shackle.lineTo(14.25,11.5)
+        p.drawPath(shackle)
+        p.drawPoint(QPointF(12,14.9))
+
     def _draw_cloud(self,p):
         path=QPainterPath();path.moveTo(6,18);path.cubicTo(2,18,2,12,7,11)
         path.cubicTo(7,5,16,4,18,11);path.cubicTo(23,11,23,18,18,18);path.closeSubpath();p.drawPath(path)
@@ -255,7 +297,7 @@ class AnimatedIcon(QWidget):
         p.drawArc(10,17,4,3,180*16,180*16)
 
     def _draw_back(self,p):
-        shift=-3*self.interaction_progress
+        shift=0.0  # Navigation arrow stays centered on hover; no sideways jump.
         p.drawLine(QPointF(14+shift,6),QPointF(8+shift,12));p.drawLine(QPointF(8+shift,12),QPointF(14+shift,18))
         p.drawLine(QPointF(8+shift,12),QPointF(19+shift,12))
 
@@ -307,10 +349,9 @@ class AnimatedIcon(QWidget):
         path.lineTo(9.9,21.2);path.lineTo(18.5,10);path.lineTo(13,10);path.closeSubpath();p.drawPath(path)
 
     def _draw_brand(self,p):
-        path=QPainterPath();path.moveTo(12,2.8);path.lineTo(21.2,12);path.lineTo(12,21.2)
-        path.lineTo(2.8,12);path.closeSubpath();p.drawPath(path)
-        inner=QPainterPath();inner.moveTo(12,6.8);inner.lineTo(17.2,12);inner.lineTo(12,17.2)
-        inner.lineTo(6.8,12);inner.closeSubpath();p.drawPath(inner)
+        # Three connected nodes inside a rounded-square route map.
+        # Shared with the tray icon and installer, no old-school globe lines.
+        paint_brand_symbol(p)
 
     def _draw_chevron(self,p):
         shift=1.2*self.interaction_progress
@@ -372,11 +413,11 @@ class PremiumIconButton(QPushButton):
             glow=QColor(ACCENT);glow.setAlpha(round(44*self.hover_progress))
             painter.setPen(QPen(glow,4));painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(rect,self.corner_radius,self.corner_radius)
-        border=QColor('#273337');hover=QColor('#3BB889')
+        border=QColor('#365642');hover=QColor('#7DE7A1')
         border.setRed(round(border.red()+(hover.red()-border.red())*self.hover_progress))
         border.setGreen(round(border.green()+(hover.green()-border.green())*self.hover_progress))
         border.setBlue(round(border.blue()+(hover.blue()-border.blue())*self.hover_progress))
-        background=QColor('#11191B');hover_background=QColor('#162720')
+        background=QColor('#14291E');hover_background=QColor('#254634')
         for channel in ('red','green','blue'):
             setter=getattr(background,'set'+channel.capitalize())
             setter(round(getattr(background,channel)()+
@@ -392,7 +433,15 @@ class IconTextButton(PremiumIconButton):
         self.kind=IconKind(kind);self.hover_progress=0.0;self.press_progress=0.0
         self.accented=bool(accented);self.trailing=bool(trailing)
         self.setText(text);self.setAccessibleName(text);self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumSize(112,36);self.setStyleSheet('border:none;background:transparent;padding:0')
+        # These buttons paint their labels manually, so native QPushButton
+        # size hints do not account for the icon + caption.  Reserve actual
+        # label width instead of truncating 'Компоненты' at narrow DPI scales.
+        caption_font=QFont('Segoe UI');caption_font.setPixelSize(12)
+        caption_font.setWeight(QFont.Weight.DemiBold)
+        caption_width=max((QFontMetrics(caption_font).horizontalAdvance(line)
+                           for line in text.split('\n')), default=0)
+        self.setMinimumSize(max(112, caption_width+49) if '\n' not in text else 84,36)
+        self.setStyleSheet('border:none;background:transparent;padding:0')
         self.icon_view=AnimatedIcon(self.kind,22,self);self.icon_view.set_state(IconState.ENABLED,animate=False)
         self._hover_anim=QVariantAnimation(self);self._press_anim=QVariantAnimation(self)
         for animation,duration in ((self._hover_anim,MotionTokens.HOVER_MS),(self._press_anim,90)):
@@ -408,19 +457,26 @@ class IconTextButton(PremiumIconButton):
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect=QRectF(1.5+self.press_progress,1.5+self.press_progress,
                     self.width()-3-2*self.press_progress,self.height()-3-2*self.press_progress)
-        base=QColor('#13211D' if self.accented else '#11171A')
-        hover=QColor('#17372A' if self.accented else '#18231F')
+        base=QColor('#1A3926' if self.accented else '#15291F')
+        hover=QColor('#29533A' if self.accented else '#254331')
         for channel in ('red','green','blue'):
             setter=getattr(base,'set'+channel.capitalize())
             setter(round(getattr(base,channel)()+(getattr(hover,channel)()-getattr(base,channel)())*self.hover_progress))
-        border=QColor(ACCENT if self.accented else '#365047')
+        border=QColor(ACCENT if self.accented else '#496D51')
         border.setAlpha(round((175 if self.accented else 120)+70*self.hover_progress))
         painter.setPen(QPen(border,1));painter.setBrush(base);painter.drawRoundedRect(rect,11,11)
-        painter.setPen(QColor('#F2F6F4'));font=painter.font();font.setWeight(QFont.Weight.DemiBold);painter.setFont(font)
-        text_rect=(QRectF(13,0,self.width()-45,self.height()) if self.trailing else
-                   QRectF(39,0,self.width()-47,self.height()))
+        painter.setPen(QColor(THEME_TEXT))
+        font=QFont('Segoe UI');font.setPixelSize(12)
+        font.setWeight(QFont.Weight.DemiBold);painter.setFont(font)
+        # Use a consistent, measurable text region; never paint beyond the
+        # right edge of the button or under its icon.
+        text_left=13 if self.trailing else 39
+        text_right=self.width()-39 if self.trailing else self.width()-9
+        available=max(1,text_right-text_left)
+        text=QFontMetrics(font).elidedText(self.text(),Qt.TextElideMode.ElideRight,available)
+        text_rect=QRectF(text_left,0,available,self.height())
         align=Qt.AlignmentFlag.AlignVCenter|(Qt.AlignmentFlag.AlignCenter if self.trailing else Qt.AlignmentFlag.AlignLeft)
-        painter.drawText(text_rect,align,self.text())
+        painter.drawText(text_rect,align,text)
         painter.end()
 
 
@@ -430,7 +486,8 @@ class ComponentTabButton(IconTextButton):
         self._title=str(title);self._status=str(status)
         super().__init__(kind,self._title+'\n'+self._status,parent)
         self.icon_view.set_state(IconState.DISABLED,animate=False)
-        self.setCheckable(True);self.setMinimumSize(76,48);self.setMaximumHeight(48)
+        self.setCheckable(True);self.setMinimumSize(84,52);self.setMaximumHeight(52)
+        self.setToolTip('')
 
     def set_icon_state(self,state,animate=True):
         self.icon_view.set_state(state,animate=animate)
@@ -438,23 +495,32 @@ class ComponentTabButton(IconTextButton):
     def setText(self,text):
         parts=str(text).split('\n',1)
         self._title=parts[0];self._status=parts[1] if len(parts)>1 else getattr(self,'_status','')
-        QPushButton.setText(self,self._title+'\n'+self._status);self.update()
+        QPushButton.setText(self,self._title+'\n'+self._status)
+        # Both strings are visible on the tab. A hover tooltip covered the
+        # neighbouring WARP label and looked like overlapping UI elements.
+        self.setToolTip('')
+        self.setAccessibleName(self._title+' · '+self._status)
+        self.update()
 
     def resizeEvent(self,event):
-        self.icon_view.setGeometry(6,9,18,18);QPushButton.resizeEvent(self,event)
+        self.icon_view.setGeometry(9,13,19,19);QPushButton.resizeEvent(self,event)
 
     def paintEvent(self,event):
         painter=QPainter(self);painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         if self.hover_progress or self.isChecked():
-            shade=QColor('#11231D');shade.setAlpha(round(55+45*self.hover_progress))
+            shade=QColor('#203E2D');shade.setAlpha(round(55+45*self.hover_progress))
             painter.setPen(Qt.PenStyle.NoPen);painter.setBrush(shade)
             painter.drawRoundedRect(QRectF(1,2,self.width()-2,self.height()-5),9,9)
         if self.isChecked():
             painter.setPen(QPen(ACCENT,2));painter.drawLine(5,self.height()-2,self.width()-5,self.height()-2)
-        title=QColor(TEXT if self.isChecked() else '#D8E1DD')
+        title=QColor(TEXT if self.isChecked() else '#DCE9DC')
         painter.setPen(title);font=painter.font();font.setWeight(QFont.Weight.DemiBold);painter.setFont(font)
-        painter.drawText(QRectF(28,4,self.width()-31,20),Qt.AlignmentFlag.AlignVCenter|Qt.AlignmentFlag.AlignLeft,self._title)
-        painter.setPen(QColor(ACCENT if self.isChecked() else '#96A49E'))
+        title_metrics=QFontMetrics(font)
+        title_text=title_metrics.elidedText(self._title,Qt.TextElideMode.ElideRight,max(1,self.width()-39))
+        painter.drawText(QRectF(35,6,self.width()-39,20),Qt.AlignmentFlag.AlignVCenter|Qt.AlignmentFlag.AlignLeft,title_text)
+        painter.setPen(QColor(ACCENT if self.isChecked() else '#AABCA9'))
         small=painter.font();small.setPixelSize(10);small.setWeight(QFont.Weight.Medium);painter.setFont(small)
-        painter.drawText(QRectF(28,23,self.width()-31,18),Qt.AlignmentFlag.AlignVCenter|Qt.AlignmentFlag.AlignLeft,self._status)
+        status_metrics=QFontMetrics(small)
+        status_text=status_metrics.elidedText(self._status,Qt.TextElideMode.ElideRight,max(1,self.width()-39))
+        painter.drawText(QRectF(35,27,self.width()-39,18),Qt.AlignmentFlag.AlignVCenter|Qt.AlignmentFlag.AlignLeft,status_text)
         painter.end()

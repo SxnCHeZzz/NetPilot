@@ -151,7 +151,10 @@ class IconAnimationTests(unittest.TestCase):
         QTest.mouseMove(button,button.rect().center());QTest.qWait(160)
         self.assertGreater(button.hover_progress,.8)
         QTest.mousePress(button,Qt.MouseButton.LeftButton,pos=button.rect().center())
-        QTest.qWait(45)
+        for _ in range(25):
+            if button.press_progress>.1:
+                break
+            QTest.qWait(10)
         self.assertGreater(button.press_progress,.1)
         QTest.mouseRelease(button,Qt.MouseButton.LeftButton,pos=button.rect().center())
         button.hide();button.deleteLater()
@@ -160,7 +163,7 @@ class IconAnimationTests(unittest.TestCase):
         back=AnimatedIcon(IconKind.BACK,16);back.set_state(IconState.DISABLED,animate=False)
         back.interaction_progress=0.0;rest=back.render_pixmap(16,1.0)
         back.interaction_progress=1.0;hover=back.render_pixmap(16,1.0)
-        self.assertAlmostEqual(alpha_centroid_x(hover)-alpha_centroid_x(rest),-2.0,delta=.55)
+        self.assertAlmostEqual(alpha_centroid_x(hover)-alpha_centroid_x(rest),0.0,delta=.55)
         self.assertEqual(ui_icons.GEAR_HOVER_DEGREES,20)
 
     def test_text_action_and_component_tab_paint_without_qfont_type_errors(self):
@@ -203,7 +206,7 @@ class IconIntegrationTests(unittest.TestCase):
         self.assertIsInstance(self.window.back_btn,premium_button)
         self.assertEqual(self.window.back_btn.accessibleName(),'Назад')
         self.assertIsInstance(self.window.back_btn.icon_view,AnimatedIcon)
-        expected={'zapret':IconKind.LOCK,'telegram':IconKind.TELEGRAM,'warp':IconKind.CLOUD}
+        expected={'zapret':IconKind.SHIELD,'telegram':IconKind.TELEGRAM,'warp':IconKind.CLOUD}
         for name,kind in expected.items():
             icon=self.window.detail_status_labels[name][0]
             self.assertIsInstance(icon,AnimatedIcon)
@@ -222,12 +225,13 @@ class IconIntegrationTests(unittest.TestCase):
         text_button=getattr(ui_icons,'IconTextButton',None)
         self.assertIsNotNone(tab_type);self.assertIsNotNone(text_button)
         self.assertEqual(self.window.brand_icon.kind,IconKind.BRAND)
-        expected={'zapret':IconKind.LOCK,'telegram':IconKind.TELEGRAM,'warp':IconKind.CLOUD}
+        expected={'zapret':IconKind.SHIELD,'telegram':IconKind.TELEGRAM,'warp':IconKind.CLOUD}
         for key,kind in expected.items():
             self.assertIsInstance(self.window.detail_tabs[key],tab_type)
             self.assertEqual(self.window.detail_tabs[key].icon_view.kind,kind)
-        self.assertIsInstance(self.window.install_button,text_button)
-        self.assertEqual(self.window.install_button.icon_view.kind,IconKind.COMPONENTS)
+        # Maintenance is intentionally not duplicated on the main screen.
+        self.assertFalse(hasattr(self.window,'install_button'))
+        self.assertEqual(self.window.settings_nav[1].text(),'Компоненты')
         self.assertEqual(self.window.test_button.icon_view.kind,IconKind.STRATEGY)
 
     def test_component_tabs_follow_semantic_state_instead_of_looking_enabled_by_default(self):

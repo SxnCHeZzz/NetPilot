@@ -84,21 +84,31 @@ class PrivilegedProtocolTests(unittest.TestCase):
             self.assertEqual(plan.mode, mode)
             self.assertIs(passed, adapter)
 
-    def test_transfer_and_restore_dispatch_through_fixed_public_operations(self):
+    def test_flowseal_apply_does_not_need_unrelated_process_inventory(self):
+        from privileged import write_request, run_request, PrivilegedAdapters
+        from flowseal_service import FlowsealResult
+        adapter = SystemAdapter()
+        folder = self.root.parent / 'zapret'
+        context = PrivilegedAdapters(adapter, folder=folder, strategy='general.bat')
+        request = self.request('flowseal_apply', strategy='general.bat',
+                               snapshot_digest='0' * 64)
+        write_request(self.root, request)
+        with patch.object(adapter, 'snapshot', side_effect=AssertionError('No inventory scan')), \
+             patch('flowseal_service.apply_flowseal_service',
+                   return_value=FlowsealResult('general.bat','enabled')) as operation:
+            response = run_request(request.request_id, self.root, context)
+        self.assertEqual(response.status, 'success')
+        operation.assert_called_once_with(folder, 'general.bat')
+
+        legacy = self.request('transfer', strategy='general.bat')
+        with self.assertRaises(ValueError):
+            write_request(self.root, legacy)
+
+    def test_restore_dispatch_through_fixed_public_operation(self):
         from privileged import write_request, run_request, PrivilegedAdapters
         adapter = SystemAdapter()
         folder = self.root.parent / 'zapret'
         context = PrivilegedAdapters(adapter, folder=folder, strategy='general.bat')
-        transfer = self.request('transfer', strategy='general.bat')
-        write_request(self.root, transfer)
-        with patch('privileged.transfer_to_netpilot',
-                   return_value=OperationResult('success', adapter.snapshot())) as operation:
-            response = run_request(transfer.request_id, self.root, context)
-        self.assertEqual(response.status, 'success')
-        sent = operation.call_args.args[0]
-        self.assertEqual((Path(sent.folder), sent.strategy, sent.confirmed),
-                         (folder, 'general.bat', True))
-
         restore = self.request('restore_autostart')
         write_request(self.root, restore)
         backup = object()
@@ -142,6 +152,7 @@ class PrivilegedProtocolTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             read_response(request.request_id, self.root)
 
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows shell32 and pathlib semantics')
     def test_elevation_passes_only_fixed_entrypoint_and_uuid(self):
         from privileged import elevate_request
         request_id = str(uuid.uuid4())

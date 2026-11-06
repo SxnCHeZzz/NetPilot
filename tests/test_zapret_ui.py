@@ -78,7 +78,7 @@ class ZapretUiTests(unittest.TestCase):
                 self.assertEqual(self.window.zapret_semantic_state, semantic)
                 self.assertEqual(self.window.detail_status_labels['zapret'][1].text(), copy)
                 self.assertEqual(self.window.tray_actions['zapret'].isChecked(), own_checked)
-                self.assertEqual(not self.window.stop_all_zapret_button.isHidden(), stop_visible)
+                self.assertEqual(self.window._stop_button_allowed, stop_visible)
 
     def test_partial_and_error_have_explicit_copy(self):
         remaining = process(220, 'external')
@@ -88,7 +88,7 @@ class ZapretUiTests(unittest.TestCase):
         self.assertEqual(self.window.zapret_semantic_state, 'partial')
         self.assertEqual(self.window.detail_status_labels['zapret'][1].text(),
                          'Zapret остановлен не полностью')
-        self.assertFalse(self.window.stop_all_zapret_button.isHidden())
+        self.assertTrue(self.window._stop_button_allowed)
 
         self.window.apply_zapret_inventory_error('timeout')
         self.assertEqual(self.window.zapret_semantic_state, 'error')
@@ -106,14 +106,14 @@ class ZapretUiTests(unittest.TestCase):
             self.window.stop_all_zapret(StopMode.DISABLE_RESTART)
             begin.assert_called_once_with('disable_restart')
 
-    def test_transfer_remains_available_while_own_and_external_zapret_run(self):
+    def test_confirmed_strategy_routes_to_flowseal_service_not_legacy_transfer(self):
         self.window.apply_zapret_snapshot(
             ZapretSnapshot((process(401), process(402, 'external'), service())))
-        self.window.managed_pids = [401]
-        with patch.object(self.window, 'inline_confirm', return_value=True), \
+        with patch.object(ui.m,'list_strategies',return_value=['general (ALT4).bat']), \
+             patch.object(self.window, 'inline_confirm', return_value=True), \
              patch.object(self.window, 'begin_privileged_operation') as begin:
             self.window.request_zapret_transfer('general (ALT4).bat')
-            begin.assert_called_once_with('transfer', 'general (ALT4).bat')
+            begin.assert_called_once_with('flowseal_apply', 'general (ALT4).bat')
 
     def test_uac_cancellation_removes_unused_one_shot_request(self):
         self.window.apply_zapret_snapshot(ZapretSnapshot((process(450),)))
@@ -136,27 +136,30 @@ class ZapretUiTests(unittest.TestCase):
             self.window.refresh_restore_autostart_action()
         self.assertFalse(button.isHidden())
 
-    def test_manual_success_offers_service_once_but_automatic_never_does(self):
+    def test_manual_success_offers_install_but_never_autoruns_selected_strategy(self):
         result = {'best': {'strategy': 'general (ALT4).bat', 'passed': 8, 'total': 8},
-                  'active_pids': [501], 'results': []}
+                  'active_pids': [], 'results': []}
         with patch.object(self.window, 'offer_strategy_autostart') as offer, \
-             patch.object(ui.m, 'write_cfg'):
+             patch.object(ui.m, 'write_cfg') as saved:
             self.window._automatic_test = False
             self.window.completed('test', result, '')
+            self.qapp.processEvents()
             offer.assert_called_once_with('general (ALT4).bat')
+            saved.assert_not_called()
             offer.reset_mock()
             self.window._automatic_test = True
             self.window.completed('test', result, '')
+            self.qapp.processEvents()
             offer.assert_not_called()
 
-    def test_strategy_offer_decline_is_remembered_for_session(self):
-        with patch.object(self.window, 'request_zapret_transfer') as transfer:
+    def test_decline_does_not_change_strategy_or_install_service(self):
+        with patch.object(ui.m,'list_strategies',return_value=['general (ALT7).bat']), \
+             patch.object(self.window, 'begin_privileged_operation') as begin, \
+             patch.object(self.window, 'inline_confirm', return_value=False) as confirm:
             self.window.offer_strategy_autostart('general (ALT7).bat')
-            self.assertFalse(self.window.strategy_offer_widget.isHidden())
-            self.window.strategy_offer_decline.click()
             self.window.offer_strategy_autostart('general (ALT7).bat')
-        self.assertTrue(self.window.strategy_offer_widget.isHidden())
-        transfer.assert_not_called()
+            self.assertEqual(confirm.call_count,2)
+        begin.assert_not_called()
 
 
 if __name__ == '__main__':

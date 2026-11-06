@@ -56,7 +56,6 @@ class InlineModalTests(unittest.TestCase):
         self.assertFalse(self.window.confirm('Действие','Подтвердить?'))
 
     def test_notice_does_not_open_system_dialog(self):
-        QTimer.singleShot(20, lambda:self._respond(True))
         ui.QMessageBox.information(self.window, 'Результат','Проверка завершена')
         self.assertFalse(any(w.isVisible() for w in self.app.topLevelWidgets() if isinstance(w,QDialog)))
 
@@ -66,7 +65,7 @@ class InlineModalTests(unittest.TestCase):
         self.assertFalse(self.window.settings_btn.isVisible())
         self.assertFalse(any(b.text().strip()=='←  Вернуться' for b in self.window.findChildren(ui.QPushButton)))
         self.window.back_btn.click()
-        self.assertFalse(self.window.back_btn.isVisible())
+        self.assertEqual(self.window.pages.currentIndex(),1)
         self.assertTrue(self.window.settings_btn.isVisible())
 
     def test_setup_is_inline(self):

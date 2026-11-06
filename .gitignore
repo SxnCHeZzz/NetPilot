@@ -41,3 +41,15 @@ Thumbs.db
 *.key
 *.pem
 *.secrets.*
+
+# Local design reviews and implementation working notes
+.superpowers/
+CHANGES_*.md
+docs/LAYOUT_QA_*.md
+docs/approved-ui-validation.md
+docs/plans/
+docs/specs/
+docs/superpowers/
+docs/references/
+docs/screenshots/layout-revision/
+tests/capture_layout_reference.py

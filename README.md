@@ -13,12 +13,12 @@
 
 <p align="center">
   <img alt="Windows 10/11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows&logoColor=white">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.5.4--rc6-66E3A4">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.5.4--rc11-66E3A4">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-5B5BD6">
 </p>
 
 > [!IMPORTANT]
-> NetPilot 0.5.4-rc6 is a release candidate. Windows networking drivers, UAC prompts and service behavior can differ between systems; review the release notes before installation.
+> NetPilot 0.5.4-rc11 is a release candidate. The build is not commercially code-signed; Windows networking drivers, UAC prompts and service behavior can differ between systems.
 
 ---
 
@@ -38,7 +38,7 @@ NetPilot отдельно показывает собственный и под�
 |---|---|---|
 | ![Главный экран](docs/screenshots/netpilot-home-v2.png) | ![Подробности](docs/screenshots/netpilot-details-zapret-v3.png) | ![Настройки](docs/screenshots/netpilot-settings-v2.png) |
 
-<sub>Интерфейс 0.5.4-rc6. Рабочие состояния показаны для демонстрации.</sub>
+<sub>Интерфейс 0.5.4-rc11. Рабочие состояния показаны для демонстрации.</sub>
 
 ## Как это работает
 
@@ -100,8 +100,9 @@ NetPilot отдельно показывает собственный и под�
 - Значок меняется по состоянию: серый — ожидание, зелёный — есть активные подключения, янтарный — выполняется операция, красный — требуется внимание.
 - Контурные иконки и переключатели анимируются только во время реального перехода состояния; сворачивание и восстановление окна не затрагивают сетевые процессы.
 - Три точки под знаком показывают число активных компонентов; точные состояния доступны в подсказке и контекстном меню.
-- Автозапуск NetPilot и автозапуск Zapret являются разными настройками.
+- Автозапуск NetPilot настраивается отдельно; автозапуск Zapret входит в единое действие применения выбранной Flowseal-стратегии.
 - Поддерживаются запуск свёрнутым и автоматические обновления компонентов.
+- Доступны журнал последних событий, уведомления Windows и пассивное отображение общего трафика компьютера.
 
 <p>
   <img src="docs/screenshots/tray-idle.png" width="48" alt="Трей: ожидание">
@@ -116,14 +117,14 @@ NetPilot отдельно показывает собственный и под�
 
 1. Откройте [последний релиз NetPilot](https://github.com/SxnCHeZzz/NetPilot/releases).
 2. Выберите:
-   - **NetPilot-0.5.4-rc6-Setup.exe** — обычная установка;
-   - **NetPilot-0.5.4-rc6-Portable.zip** — портативная версия.
+   - **NetPilot-0.5.4-rc11-Setup.exe** — обычная установка;
+   - **NetPilot-0.5.4-rc11-Portable.zip** — портативная версия.
 3. При необходимости сверьте SHA-256 с файлом **SHA256SUMS.txt**.
 4. Запустите NetPilot и установите компоненты через встроенный мастер.
 
 Установщик не требует административных прав. UAC появляется только для WinDivert, WARP или службы Zapret.
 
-Сборки RC6 пока не подписаны коммерческим сертификатом, поэтому Windows SmartScreen может показать предупреждение. Загружайте файлы только со страницы Releases и сверяйте SHA-256 перед запуском.
+Сборки RC11 пока не подписаны коммерческим сертификатом, поэтому Windows SmartScreen может показать предупреждение. Загружайте файлы только со страницы Releases и сверяйте SHA-256 перед запуском.
 
 ## Первый запуск
 
@@ -131,13 +132,13 @@ NetPilot отдельно показывает собственный и под�
 2. Выберите каталог без кириллицы и пробелов, например <code>C:\NetPilotComponents</code>.
 3. Установите Zapret и, при необходимости, WARP.
 4. Нажмите **Подобрать стратегию**.
-5. Оставьте победившую стратегию активной или включите **Zapret вместе с Windows**.
+5. После успешной ручной проверки подтвердите предложение запуска выбранной стратегии вместе с Windows, если это нужно.
 
 Telegram Proxy уже входит в сборку.
 
-## Zapret вместе с Windows
+## Zapret и запуск вместе с Windows
 
-Переключатель устанавливает выбранную стратегию как службу <code>AUTO_START</code>.
+Выбранная Flowseal-стратегия и её служба управляются как одно действие. При подтверждении запуска вместе с Windows NetPilot устанавливает выбранную стратегию как службу <code>AUTO_START</code>.
 
 - UAC запрашивается при создании или удалении службы.
 - Служба запускается независимо от окна NetPilot.
@@ -179,7 +180,8 @@ sc.exe qc zapret
 | Проблема | Что проверить |
 |---|---|
 | Zapret не запускается | Подтвердите UAC. Проверьте <code>bin\winws.exe</code>, WinDivert и антивирус. |
-| Обнаружена внешняя служба Zapret | Откройте **Подробности** для полной остановки либо подтвердите передачу выбранной стратегии службе NetPilot. |
+| Обнаружена внешняя служба Zapret | Откройте **Подробности**, повторно просканируйте состояние и подтвердите полную остановку либо передачу выбранной стратегии. |
+| Инвентаризация сообщает <code>AccessDenied</code> | Запустите NetPilot от администратора и повторите сканирование: неполная инвентаризация не считается безопасной. |
 | WinError 10013 | Проверьте брандмауэр, антивирус, прокси и сетевые разрешения. |
 | Telegram не подключился | Подтвердите <code>tg://proxy</code> или добавьте <code>127.0.0.1:1443</code> вручную. |
 | Порт 1443 занят | Закройте старый <code>TgWsProxy_windows.exe</code> через его приложение. |
@@ -200,7 +202,9 @@ python src\app.py
 Сборка:
 
 ~~~powershell
-python -m PyInstaller --clean --noconfirm --onedir --windowed --name NetPilot --icon assets\netpilot.ico --add-data "assets;assets" --collect-all proxy --collect-all utils --paths src src\app.py
+python -m PyInstaller --clean --noconfirm --onedir --contents-directory . --windowed --name NetPilot --icon assets\netpilot.ico --add-data "assets;assets" --collect-all proxy --collect-all utils --paths src src\app.py
+Remove-Item -LiteralPath dist\NetPilot\icuuc.dll -ErrorAction SilentlyContinue
+Get-ChildItem dist\NetPilot -Filter 'icudt*.dll' | Remove-Item -Force
 ~~~
 
 Установщик через Inno Setup 6:
@@ -258,7 +262,7 @@ NetPilot reports its own and confirmed external Zapret instances separately. Ext
 |---|---|---|
 | ![Home](docs/screenshots/netpilot-home-v2.png) | ![Details](docs/screenshots/netpilot-details-zapret-v3.png) | ![Settings](docs/screenshots/netpilot-settings-v2.png) |
 
-<sub>NetPilot 0.5.4-rc6. Working states are shown for demonstration.</sub>
+<sub>NetPilot 0.5.4-rc11. Working states are shown for demonstration.</sub>
 
 ## How it works
 
@@ -320,8 +324,9 @@ Component rollback is separate from strategy rollback. During an update, NetPilo
 - The icon reflects current state: gray means idle, green means connected, amber means an operation is running, and red requires attention.
 - Vector icons and toggles animate only during a real state transition; minimizing or restoring the window never touches network processes.
 - Three dots below the mark show the number of active components; exact states are available in the tooltip and context menu.
-- Starting NetPilot and starting Zapret with Windows are separate settings.
+- NetPilot startup is configured separately; Zapret startup is part of the single action that applies the selected Flowseal strategy.
 - Tray startup and automatic component updates are supported.
+- A recent-event journal, Windows notifications and passive total-PC traffic readings are available.
 
 <p>
   <img src="docs/screenshots/tray-idle.png" width="48" alt="Tray: idle">
@@ -336,14 +341,14 @@ Requirement: **Windows 10/11 x64**.
 
 1. Open the [latest NetPilot release](https://github.com/SxnCHeZzz/NetPilot/releases).
 2. Choose:
-   - **NetPilot-0.5.4-rc6-Setup.exe** for installation;
-   - **NetPilot-0.5.4-rc6-Portable.zip** for portable use.
+   - **NetPilot-0.5.4-rc11-Setup.exe** for installation;
+   - **NetPilot-0.5.4-rc11-Portable.zip** for portable use.
 3. Optionally verify SHA-256 values against **SHA256SUMS.txt**.
 4. Start NetPilot and install components through the setup flow.
 
 The installer does not require administrator rights. UAC appears only for WinDivert, WARP or the Zapret service.
 
-RC6 builds are not yet signed with a commercial certificate, so Windows SmartScreen may display a warning. Download only from the Releases page and verify the SHA-256 value before running a file.
+RC11 builds are not yet signed with a commercial certificate, so Windows SmartScreen may display a warning. Download only from the Releases page and verify the SHA-256 value before running a file.
 
 ## First run
 
@@ -351,13 +356,13 @@ RC6 builds are not yet signed with a commercial certificate, so Windows SmartScr
 2. Select a path without spaces or non-ASCII characters, such as <code>C:\NetPilotComponents</code>.
 3. Install Zapret and, if needed, WARP.
 4. Select **Find best strategy**.
-5. Keep the winner active or enable **Zapret with Windows**.
+5. After a successful manual test, accept the Windows-startup offer if required.
 
 Telegram Proxy is bundled.
 
-## Zapret with Windows
+## Zapret and Windows startup
 
-The switch installs the selected strategy as an <code>AUTO_START</code> service.
+The selected Flowseal strategy and its service are managed as one operation. After confirmation, NetPilot installs the selected strategy as an <code>AUTO_START</code> service.
 
 - UAC is requested when the service is created or removed.
 - The service starts independently of the NetPilot window.
@@ -399,7 +404,8 @@ Ambiguous processes are never stopped automatically. Cancelling UAC changes noth
 | Problem | What to check |
 |---|---|
 | Zapret does not start | Accept UAC. Check <code>bin\winws.exe</code>, WinDivert and antivirus blocks. |
-| An external Zapret service was detected | Open **Details** to stop all confirmed instances or explicitly transfer the selected strategy to NetPilot. |
+| An external Zapret service was detected | Open **Details**, rescan and explicitly confirm full stop or strategy transfer. |
+| Inventory reports <code>AccessDenied</code> | Run NetPilot as administrator and rescan; an incomplete inventory is not treated as safe. |
 | WinError 10013 | Check firewall, antivirus, proxy and network permissions. |
 | Telegram did not connect | Confirm <code>tg://proxy</code> or add <code>127.0.0.1:1443</code> manually. |
 | Port 1443 is occupied | Close the older <code>TgWsProxy_windows.exe</code> through its own app. |
@@ -420,7 +426,9 @@ python src\app.py
 Build:
 
 ~~~powershell
-python -m PyInstaller --clean --noconfirm --onedir --windowed --name NetPilot --icon assets\netpilot.ico --add-data "assets;assets" --collect-all proxy --collect-all utils --paths src src\app.py
+python -m PyInstaller --clean --noconfirm --onedir --contents-directory . --windowed --name NetPilot --icon assets\netpilot.ico --add-data "assets;assets" --collect-all proxy --collect-all utils --paths src src\app.py
+Remove-Item -LiteralPath dist\NetPilot\icuuc.dll -ErrorAction SilentlyContinue
+Get-ChildItem dist\NetPilot -Filter 'icudt*.dll' | Remove-Item -Force
 ~~~
 
 Create the installer with Inno Setup 6:

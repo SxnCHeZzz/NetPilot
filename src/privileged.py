@@ -18,13 +18,13 @@ import tempfile
 import time
 import uuid
 
-from zapret_control import (OperationResult, StopMode, TransferRequest,
+from zapret_control import (OperationResult, StopMode,
                             execute_stop, load_backup, make_stop_plan,
-                            restore_autostart, transfer_to_netpilot)
+                            restore_autostart)
 from zapret_inventory import ZapretSnapshot
 
 
-ALLOWED_OPERATIONS = frozenset({'stop_all', 'disable_restart', 'transfer', 'restore_autostart'})
+ALLOWED_OPERATIONS = frozenset({'stop_all', 'disable_restart', 'restore_autostart', 'remove_managed_service', 'flowseal_apply', 'flowseal_stop'})
 REQUEST_MAX_AGE = 300.0
 RESPONSE_MAX_AGE = 3600.0
 
@@ -94,16 +94,28 @@ def _validate_request(request: PrivilegedRequest) -> None:
     if (not isinstance(request.strategy, str) or Path(request.strategy).name != request.strategy or
             any(char in request.strategy for char in r'\/:')):
         raise ValueError('invalid strategy identity')
-    if request.operation == 'transfer' and not request.strategy:
+    if request.operation == 'flowseal_apply' and not request.strategy:
         raise ValueError('transfer requires a strategy identity')
-    if request.operation != 'transfer' and request.strategy:
+    if request.operation != 'flowseal_apply' and request.strategy:
         raise ValueError('strategy is only allowed for transfer')
 
 
 def snapshot_digest(snapshot: ZapretSnapshot) -> str:
     if not isinstance(snapshot, ZapretSnapshot):
         raise ValueError('invalid inventory snapshot')
-    payload = json.dumps(asdict(snapshot), ensure_ascii=False, sort_keys=True,
+    # User/non-elevated discovery can produce different warning *strings* than
+    # the elevated process even when every identified component is unchanged.
+    # Hash discovered identities and actionable state, not diagnostic prose.
+    # This remains fail-closed for newly visible, changed, or missing entries.
+    # Execution separately rejects an incomplete/ambiguous elevated inventory.
+    identities = []
+    for item in snapshot.items:
+        record = asdict(item)
+        if record.get('process') is not None:
+            record['process'].pop('warnings', None)
+        identities.append(record)
+    fingerprint = {'items': identities}
+    payload = json.dumps(fingerprint, ensure_ascii=False, sort_keys=True,
                          separators=(',', ':'), allow_nan=False).encode('utf-8')
     return hashlib.sha256(payload).hexdigest()
 
@@ -212,17 +224,35 @@ def run_request(request_id: str, root, adapters: PrivilegedAdapters) -> Privileg
             age = time.time() - request.created_at
             if age < -30 or age > REQUEST_MAX_AGE:
                 raise ValueError('privileged request is stale')
+            if request.operation == 'remove_managed_service':
+                # Service removal is independently scoped to NetPilot's own
+                # registry ownership marker. It never removes external SCM
+                # entries and does not depend on readable foreign processes.
+                from managed import remove_zapret_service
+                remove_zapret_service()
+                response = PrivilegedResponse(request_id, 'success', time.time())
+                return _write_response(root, response)
+            if request.operation in {'flowseal_apply', 'flowseal_stop'}:
+                # Do NOT require a full process inventory: Windows often denies
+                # access to unrelated process cmdlines.  The elevated helper
+                # instead verifies the exact `zapret` SCM entry, its executable
+                # and upstream marker immediately before touching the service.
+                if adapters.folder is None:
+                    raise ValueError('Flowseal installation directory is missing')
+                from flowseal_service import apply_flowseal_service, stop_flowseal_service
+                if request.operation == 'flowseal_apply':
+                    outcome = apply_flowseal_service(adapters.folder, request.strategy)
+                else:
+                    outcome = stop_flowseal_service(adapters.folder)
+                return _write_response(root, PrivilegedResponse(
+                    request_id, 'success', time.time(),
+                    completed_steps=(f'flowseal:{outcome.action}:{outcome.strategy}',)))
             snapshot = adapters.system.snapshot()
             if snapshot_digest(snapshot) != request.snapshot_digest:
                 raise ValueError('inventory changed; rescan and confirm again')
             if request.operation in {'stop_all', 'disable_restart'}:
                 mode = StopMode.TEMPORARY if request.operation == 'stop_all' else StopMode.DISABLE_RESTART
                 result = execute_stop(make_stop_plan(snapshot, mode), adapters.system)
-            elif request.operation == 'transfer':
-                if adapters.folder is None or request.strategy != adapters.strategy:
-                    raise ValueError('selected strategy changed; rescan and confirm again')
-                result = transfer_to_netpilot(
-                    TransferRequest(adapters.folder, request.strategy, snapshot, confirmed=True), adapters.system)
             else:
                 backup = load_backup()
                 if backup is None:

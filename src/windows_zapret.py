@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 from pathlib import Path
 import subprocess
 import time
@@ -70,13 +71,44 @@ class WindowsZapretAdapter:
             return 'running'
         if 'STOPPED' in text:
             return 'stopped'
+        # Windows localizes state labels; SCM numeric states stay stable.
+        numeric = re.search(r'(?m)^\s*(?:STATE|СОСТОЯНИЕ)\s*:\s*([1-7])\b',
+                            result.stdout, re.I)
+        if numeric and numeric.group(1) == '4':
+            return 'running'
+        if numeric and numeric.group(1) == '1':
+            return 'stopped'
         raise RuntimeError('service is in a transitional or unknown state')
+
+    def get_service_pid(self, name):
+        """Read SCM PID without altering the service; unknown is not trusted."""
+        if str(name).casefold() != 'zapret':
+            raise ValueError('unexpected service identity')
+        output = self._run(['sc.exe', 'queryex', name]).stdout
+        match = re.search(r'(?im)^\s*PID\s*:\s*(\d+)\s*$', output)
+        value = int(match.group(1)) if match else 0
+        return value if value > 0 else None
+
+    def _wait_service_state(self, name, expected):
+        """SCM start/stop returns while the service is still pending."""
+        deadline = time.monotonic() + min(self.timeout, 8.0)
+        while time.monotonic() < deadline:
+            try:
+                state = self._service_state(name)
+            except RuntimeError:  # START_PENDING / STOP_PENDING
+                state = 'pending'
+            if state == expected or (expected == 'stopped' and state is None):
+                return
+            time.sleep(0.2)
+        raise RuntimeError(f'service did not reach {expected} state before timeout')
 
     def stop_service(self, name):
         self._run(['sc.exe', 'stop', name], allow=(0, 1062))
+        self._wait_service_state(name, 'stopped')
 
     def start_service(self, name):
         self._run(['sc.exe', 'start', name])
+        self._wait_service_state(name, 'running')
 
     def delete_service(self, name):
         self._run(['sc.exe', 'delete', name])
