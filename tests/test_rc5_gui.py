@@ -1,6 +1,7 @@
 """Offscreen regression tests for the RC5 setup and settings UI."""
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -26,6 +27,7 @@ class SetupAndPreferences(unittest.TestCase):
     def setUp(self):
         with patch.object(ui.NetPilot, 'on_first_run', lambda self: None), \
              patch.object(ui.NetPilot, 'check_updates', lambda self, *a: None), \
+             patch.object(ui.NetPilot, 'refresh_zapret_inventory', lambda self: None), \
              patch.object(managed, 'service_state', return_value='not_installed'), \
              patch.object(managed, 'warp_cli', return_value=None):
             self.window = ui.NetPilot()
@@ -63,12 +65,13 @@ class SetupAndPreferences(unittest.TestCase):
         self.assertFalse(any('тишина во время игр' in x for x in labels))
         self.assertFalse(any('автоматически применять лидера' in x for x in labels))
 
-    def test_settings_separate_app_and_zapret_startup(self):
+    def test_settings_use_unified_flowseal_startup(self):
         labels = [w.text() for w in self.window.findChildren(__import__('PySide6.QtWidgets',fromlist=['QLabel']).QLabel)]
         self.assertIn('NetPilot вместе с Windows',labels)
-        self.assertIn('Zapret вместе с Windows',labels)
-        self.assertIn('ВЫКЛ',labels)
-        self.assertIn('#66E3A4', ui.CSS)
+        self.assertNotIn('Zapret вместе с Windows',labels)
+        self.assertTrue(self.window.zapret_service_row.isHidden())
+        self.assertTrue(self.window.service_badge.text())
+        self.assertIn('#7DE7A1', ui.CSS)
         for active in range(4):
             self.assertFalse(ui.status_icon(active_count=active).isNull())
         self.assertFalse(ui.status_icon(busy=True).isNull())
@@ -87,7 +90,8 @@ class SetupAndPreferences(unittest.TestCase):
         self.assertIn('Активно 2 из 3', self.window.tray.toolTip())
 
     def test_compact_details_switches_one_panel(self):
-        self.assertEqual((self.window.width(), self.window.height()), (324, 414))
+        self.assertEqual(self.window.width(),400)
+        self.assertGreaterEqual(self.window.height(),280)
         self.window.open_details()
         self.assertEqual(self.window.pages.currentIndex(), 1)
         self.window.select_detail(1)
@@ -110,38 +114,56 @@ class SetupAndPreferences(unittest.TestCase):
 
     def test_detail_cards_expose_only_distinct_actions(self):
         actions=[button.text() for button in self.window.findChildren(QPushButton)]
-        self.assertIn('Подобрать лучшую стратегию  ›',actions)
+        self.assertIn('Подобрать лучшую стратегию',actions)
         self.assertFalse(any('Telegram Desktop' in text for text in actions))
         self.assertFalse(any('статус WARP' in text for text in actions))
         self.assertTrue(self.window.test_details.isHidden())
 
     def test_background_status_is_silent_and_notices_expire(self):
         self.window.completed('warpstatus','Status update: Disconnected','')
-        self.assertTrue(self.window.message.isHidden())
+        before=self.window.size()
         self.window.note('Telegram Proxy включён')
-        self.assertFalse(self.window.message.isHidden())
-        self.assertTrue(self.window.message_timer.isActive())
+        self.assertEqual(self.window.size(),before)
+        self.assertFalse(hasattr(self.window,'message_card'))
+        self.assertIn('Telegram Proxy включён',self.window.event_journal.recent_text())
 
-    def test_notice_replaces_details_footer_instead_of_shrinking_card(self):
+    def test_notice_is_external_and_never_changes_page_footer(self):
         self.window.open_details()
+        original_size=self.window.size()
         self.window.note('Все компоненты актуальны')
-        self.assertTrue(self.window.details_footer.isHidden())
+        self.assertFalse(hasattr(self.window,'details_footer'))
+        self.assertEqual(self.window.size(),original_size)
+
+    def test_zapret_access_denied_uses_polished_attention_state_and_keeps_diagnostics(self):
+        raw=('Operation Zapret: transfer: ValueError: inventory is incomplete or changed; '
+             'rescan and confirm again; process 336 cmdline: AccessDenied')
+        original_label=self.window.home_summaries['zapret'].status.text()
+        original_state=self.window.home_summaries['zapret'].dot.state
+        self.window.note(raw,True)
+        self.assertFalse(hasattr(self.window,'message_card'))
+        self.assertIn('AccessDenied',self.window.event_journal.recent_text())
+        self.assertEqual(self.window.home_summaries['zapret'].dot.state,ui.IconState.ERROR)
         self.window._hide_message()
-        self.assertTrue(self.window.message.isHidden())
-        self.assertFalse(self.window.details_footer.isHidden())
+        self.assertEqual(self.window.home_summaries['zapret'].dot.state,original_state)
+        self.assertEqual(self.window.home_summaries['zapret'].status.text(),original_label)
 
     def test_failed_background_warp_poll_is_silent(self):
         self.window.completed('warpstatus',None,'daemon unavailable')
-        self.assertTrue(self.window.message.isHidden())
+        self.assertFalse(hasattr(self.window,'message_card'))
         self.assertEqual(self.window.detail_facts['warp']['Подключение'].text(),'Недоступно')
 
-    def test_foreign_flowseal_service_cannot_be_removed(self):
+    def test_flowseal_service_has_no_separate_autostart_toggle(self):
         with patch.object(managed,'service_state',return_value='RUNNING'), \
-             patch.object(managed,'zapret_service_owned',return_value=False):
+             patch.object(managed,'service_start_mode',return_value='AUTO_START'):
             self.window.refresh_service_setting()
-        self.assertTrue(self.window.zapret_service_toggle.isChecked())
-        self.assertFalse(self.window.zapret_service_toggle.isEnabled())
-        self.assertEqual(self.window.service_badge.text(),'СЛУЖБА FLOWSEAL')
+        self.assertTrue(self.window.zapret_service_row.isHidden())
+        self.assertIn('FLOWSEAL',self.window.service_badge.text())
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(managed,'sub_dir',return_value=Path(folder)), \
+             patch.object(managed,'list_strategies',return_value=['general.bat']), \
+             patch.object(self.window,'offer_strategy_autostart') as offer:
+            self.window.change_zapret_autostart(True)
+        offer.assert_called_once_with('general.bat')
 
     def test_wizard_starts_both_installs_when_selected(self):
         class DummySetup:

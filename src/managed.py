@@ -28,7 +28,8 @@ DOMAINS_FILE = ASSETS / 'domains.txt'
 CLOUDFLARE_FILE = ASSETS / 'cloudflare-domains.txt'
 DEFAULT = {'components_dir': str(COMPONENTS), 'strategy':'general.bat',
            'auto_check': True, 'auto_upgrade': False, 'auto_strategy': True,
-           'start_hidden': False, 'installed':{}, 'language':'ru', 'telegram_secret':''}
+           'start_hidden': False, 'installed':{}, 'language':'ru', 'telegram_secret':'',
+           'notifications_enabled': True, 'notify_success': True}
 
 ZAPRET_SERVICE = 'zapret'
 ZAPRET_OWNER_VALUE = 'NetPilotManaged'
@@ -243,11 +244,48 @@ def warp_install_command():
 
 
 def service_state(name):
-    if os.name!='nt':return 'not_windows'
-    res=cli_run(['sc.exe','query',name],6)
-    if res.returncode:return 'not_installed'
-    match=re.search(r'\b(?:RUNNING|STOPPED|START_PENDING|STOP_PENDING)\b',res.stdout)
-    return match.group(0) if match else 'unknown'
+    """SCM state of one *named service*, not the state of Zapret processes.
+
+    Only error 1060 means not installed. Access denied and other failures
+    must never be reported as absence of the service.
+    """
+    if os.name != 'nt':
+        return 'not_windows'
+    try:
+        res = cli_run(['sc.exe', 'query', name], 6)
+    except (OSError, subprocess.SubprocessError):
+        return 'unknown'
+    if res.returncode:
+        output = (res.stdout + '\n' + res.stderr).casefold()
+        if res.returncode == 1060 or re.search(r'(?<!\d)1060(?!\d)', output):
+            return 'not_installed'
+        return 'access_denied' if re.search(r'(?<!\d)5(?!\d)', output) else 'unknown'
+    match = re.search(r'\b(?:RUNNING|STOPPED|START_PENDING|STOP_PENDING|PAUSED)\b', res.stdout)
+    if match:
+        return match.group(0)
+    # SC sometimes localizes the label but its numeric state remains stable.
+    match = re.search(r'(?m)^\s*(?:STATE|СОСТОЯНИЕ)\s*:\s*([1-7])\b', res.stdout, re.I)
+    return {'1': 'STOPPED', '2': 'START_PENDING', '3': 'STOP_PENDING',
+            '4': 'RUNNING', '7': 'PAUSED'}.get(match.group(1), 'unknown') if match else 'unknown'
+
+
+def service_start_mode(name):
+    """Read configured Windows startup type without modifying the service."""
+    if os.name != 'nt':
+        return 'not_windows'
+    try:
+        res = cli_run(['sc.exe', 'qc', name], 6)
+    except (OSError, subprocess.SubprocessError):
+        return 'unknown'
+    if res.returncode:
+        text = (res.stdout + '\n' + res.stderr).casefold()
+        return 'not_installed' if res.returncode == 1060 or re.search(r'(?<!\d)1060(?!\d)', text) else 'unknown'
+    match = re.search(r'\b(AUTO_START|DEMAND_START|DISABLED|BOOT_START|SYSTEM_START)\b', res.stdout)
+    if match:
+        return match.group(1)
+    match = re.search(r'(?m)^\s*(?:START_TYPE|ТИП_ЗАПУСКА)\s*:\s*([0-4])\b', res.stdout, re.I)
+    return {'0': 'BOOT_START', '1': 'SYSTEM_START', '2': 'AUTO_START',
+            '3': 'DEMAND_START', '4': 'DISABLED'}.get(match.group(1), 'unknown') if match else 'unknown'
 
 
 def zapret_service_owned():
@@ -331,6 +369,26 @@ def _service_run(argv,timeout=20,allow=(0,)):
     return result
 
 
+def validated_zapret_service_command(folder, strategy):
+    """Validate all local inputs before an installer or ownership transfer mutates SCM."""
+    base = Path(folder).resolve()
+    exe, args = zapret_service_command(base, strategy)
+    for path in (base / strategy, Path(exe)):
+        if not path.resolve().is_relative_to(base):
+            raise ValueError('Zapret command path escapes the selected component folder.')
+    if not Path(exe).is_file():
+        raise FileNotFoundError('Не найден bin\\winws.exe.')
+    quoted = False
+    for char in args:
+        if char == '"':
+            quoted = not quoted
+        elif ord(char) < 32 or (not quoted and char in '&|<>^'):
+            raise ValueError('Invalid generated Zapret service command.')
+    if quoted:
+        raise ValueError('Unbalanced quotes in generated Zapret service command.')
+    return exe, args
+
+
 def _wait_service_absent(timeout=6):
     deadline=time.monotonic()+timeout
     while time.monotonic()<deadline:
@@ -345,8 +403,7 @@ def install_zapret_service(folder,strategy):
     state=service_state(ZAPRET_SERVICE)
     if state!='not_installed' and not zapret_service_owned():
         raise RuntimeError('Служба Zapret уже установлена другим приложением. NetPilot не будет её заменять.')
-    exe,args=zapret_service_command(folder,strategy)
-    if not Path(exe).is_file():raise FileNotFoundError('Не найден bin\\winws.exe.')
+    exe,args=validated_zapret_service_command(folder,strategy)
     lists=Path(folder)/'lists';lists.mkdir(parents=True,exist_ok=True)
     defaults={'ipset-exclude-user.txt':'203.0.113.113/32\n',
               'list-general-user.txt':'# Never leave this file empty\ndomain.example.abc\n',

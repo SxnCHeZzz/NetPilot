@@ -52,4 +52,29 @@ class StrategyEngineTests(unittest.TestCase):
                 with self.assertRaisesRegex(b.BenchmarkError,'служба zapret'):
                     b.preflight(root)
 
+    def test_preflight_allows_a_stopped_flowseal_service_only_when_paused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); (root/'bin').mkdir(); (root/'bin'/'winws.exe').touch()
+            (root/'general.bat').write_text('echo test',encoding='ascii')
+            with patch.object(b,'os',SimpleNamespace(name='nt',path=os.path)), \
+                 patch.object(b,'is_admin',return_value=True), \
+                 patch.object(b.managed,'service_state',return_value='STOPPED'), \
+                 patch.object(b.managed,'list_strategies',return_value=['general.bat']), \
+                 patch.object(b.psutil,'process_iter',return_value=[]), \
+                 patch.object(b,'load_catalog'):
+                strategies = b.preflight(root, service_paused=True)
+                self.assertEqual(len(strategies), 1)
+                self.assertTrue(os.path.samefile(strategies[0], root/'general.bat'))
+                with self.assertRaises(b.BenchmarkError):
+                    b.preflight(root)
+
+    def test_preflight_refuses_a_running_service_even_if_marked_paused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); (root/'bin').mkdir(); (root/'bin'/'winws.exe').touch()
+            with patch.object(b,'os',SimpleNamespace(name='nt',path=os.path)), \
+                 patch.object(b,'is_admin',return_value=True), \
+                 patch.object(b.managed,'service_state',return_value='RUNNING'):
+                with self.assertRaises(b.BenchmarkError):
+                    b.preflight(root, service_paused=True)
+
 if __name__=='__main__':unittest.main()

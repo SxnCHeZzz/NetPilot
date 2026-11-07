@@ -33,12 +33,15 @@ def is_admin():
     return bool(ctypes.windll.shell32.IsUserAnAdmin())
 
 
-def preflight(folder):
+def preflight(folder, *, service_paused=False):
     folder=Path(folder).resolve()
     if os.name!='nt':raise BenchmarkError('Стратегии можно запускать только в Windows.')
     if not is_admin():raise BenchmarkError('Для WinDivert нужны права администратора.')
-    if managed.service_state('zapret') != 'not_installed':
-        raise BenchmarkError('Обнаружена служба zapret. NetPilot не изменяет установленную службу в ходе теста. Остановите и удалите её вручную через Flowseal.')
+    service_state = managed.service_state('zapret')
+    # A verified Flowseal service may be stopped temporarily by our wrapper.
+    # Its presence in SCM is not a conflict while it is actually stopped.
+    if service_state != 'not_installed' and not (service_paused and service_state == 'STOPPED'):
+        raise BenchmarkError('Обнаружена служба zapret: она работает или её остановка не подтверждена. Повторите проверку.')
     if any((p.info.get('name') or '').lower()=='winws.exe' for p in psutil.process_iter(['name'])):
         raise BenchmarkError('Уже запущен winws.exe. NetPilot не будет останавливать чужой процесс.')
     if not (folder/'bin'/'winws.exe').is_file():
@@ -276,7 +279,7 @@ def scan_hosts(hosts,cancel,progress=None,max_workers=MAX_WORKERS):
         executor.shutdown(wait=True,cancel_futures=True)
 
 
-def benchmark(folder,notify,cancel,*,keep_best=False,owned_pids=(),previous_strategy="general.bat"):
+def benchmark(folder,notify,cancel,*,keep_best=False,owned_pids=(),previous_strategy="general.bat",service_paused=False):
     """Test only our own processes, restoring prior state on failure/cancel.
 
     Does not stop third-party winws, modify services, or rewrite Flowseal files.
@@ -290,7 +293,7 @@ def benchmark(folder,notify,cancel,*,keep_best=False,owned_pids=(),previous_stra
             notify(0, 'Временно остановлена стратегия NetPilot; настройки будут восстановлены')
             stop_managed_pids(original_pids,folder)
             time.sleep(.45)
-        files=[Path(p) for p in preflight(folder)]
+        files=[Path(p) for p in preflight(folder, service_paused=service_paused)]
         catalog=load_catalog(folder)
         hosts=catalog.hosts
         named=parse_flowseal_targets(folder)
