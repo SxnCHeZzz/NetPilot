@@ -36,7 +36,7 @@ NetPilot отдельно показывает собственный и под�
 
 | Главный экран | Подробности | Настройки |
 |---|---|---|
-| ![Главный экран](docs/screenshots/netpilot-home-v2.png) | ![Подробности](docs/screenshots/netpilot-details-zapret-v3.png) | ![Настройки](docs/screenshots/netpilot-settings-v2.png) |
+| ![Главный экран](docs/screenshots/netpilot-home-rc11.png) | ![Подробности](docs/screenshots/netpilot-details-zapret-rc11.png) | ![Настройки](docs/screenshots/netpilot-settings-rc11.png) |
 
 <sub>Интерфейс 0.5.4-rc11. Рабочие состояния показаны для демонстрации.</sub>
 
@@ -260,7 +260,7 @@ NetPilot reports its own and confirmed external Zapret instances separately. Ext
 
 | Home | Details | Settings |
 |---|---|---|
-| ![Home](docs/screenshots/netpilot-home-v2.png) | ![Details](docs/screenshots/netpilot-details-zapret-v3.png) | ![Settings](docs/screenshots/netpilot-settings-v2.png) |
+| ![Home](docs/screenshots/netpilot-home-rc11.png) | ![Details](docs/screenshots/netpilot-details-zapret-rc11.png) | ![Settings](docs/screenshots/netpilot-settings-rc11.png) |
 
 <sub>NetPilot 0.5.4-rc11. Working states are shown for demonstration.</sub>
 
