@@ -62,7 +62,9 @@ class StrategyEngineTests(unittest.TestCase):
                  patch.object(b.managed,'list_strategies',return_value=['general.bat']), \
                  patch.object(b.psutil,'process_iter',return_value=[]), \
                  patch.object(b,'load_catalog'):
-                self.assertEqual(b.preflight(root, service_paused=True), [str(root/'general.bat')])
+                strategies = b.preflight(root, service_paused=True)
+                self.assertEqual(len(strategies), 1)
+                self.assertTrue(os.path.samefile(strategies[0], root/'general.bat'))
                 with self.assertRaises(b.BenchmarkError):
                     b.preflight(root)
 
